@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steady-state-combined"
+version = "0.1.0"
+description = "Steady-state approximation design for ellipsoidal set-membership filtering"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Florian Pfaff" }
+]
+dependencies = [
+  "numpy>=1.23"
+]
+
+[project.optional-dependencies]
+plot = [
+  "matplotlib>=3.7"
+]
+dev = [
+  "pytest>=7",
+  "ruff>=0.5"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
