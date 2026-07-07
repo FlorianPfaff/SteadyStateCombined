@@ -1,4 +1,4 @@
-.PHONY: test eval-fixed eval-riccati eval-combined eval-all export-paper
+.PHONY: test eval-fixed eval-riccati eval-combined eval-all export-paper tables-paper paper-artifacts
 
 test:
 	pytest
@@ -16,3 +16,8 @@ eval-all: eval-fixed eval-riccati eval-combined
 
 export-paper:
 	python scripts/export_results_to_paper.py --paper-root ../2026-07-SteadyStateCombined-Paper
+
+tables-paper:
+	python scripts/generate_latex_tables.py --paper-root ../2026-07-SteadyStateCombined-Paper
+
+paper-artifacts: export-paper tables-paper
