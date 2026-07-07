@@ -1,5 +1,14 @@
 """Steady-state ellipsoidal set-membership filtering code."""
 
+from .combined_pareto import (
+    CombinedCandidate,
+    CombinedParetoProblem,
+    CombinedParetoResult,
+    deterministic_combined_pareto_problem,
+    enumerate_combined_candidates_2d,
+    pareto_from_candidates,
+    solve_combined_fixed_gain_alpha,
+)
 from .ellipsoidal import (
     FixedGainProblem,
     bounded_error_check,
@@ -23,18 +32,25 @@ from .riccati import (
 )
 
 __all__ = [
+    "CombinedCandidate",
+    "CombinedParetoProblem",
+    "CombinedParetoResult",
     "FixedGainProblem",
     "GainOptimizedProblem",
     "RiccatiResult",
     "bounded_error_check",
     "criterion_value",
+    "deterministic_combined_pareto_problem",
     "deterministic_gain_optimized_problem",
+    "enumerate_combined_candidates_2d",
     "grid_optimize_riccati",
     "grid_optimize_weights",
     "line_search_to_nonmyopic",
     "nonmyopic_weights",
+    "pareto_from_candidates",
     "riccati_update",
     "solve_adjoint",
+    "solve_combined_fixed_gain_alpha",
     "solve_fixed_alpha_riccati",
     "solve_fixed_gain_steady_state",
     "spectral_radius",
