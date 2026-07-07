@@ -122,10 +122,35 @@ python examples/run_combined_pareto.py --out results_combined_grid41 --alpha-gri
 
 Use these for stronger paper figures and tables.
 
+With both repositories checked out as siblings, export generated artifacts into the paper repository with:
+
+```bash
+python scripts/export_results_to_paper.py --paper-root ../2026-07-SteadyStateCombined-Paper
+```
+
+or simply:
+
+```bash
+make export-paper
+```
+
+The exporter copies CSV files into `../2026-07-SteadyStateCombined-Paper/results/`, figures into `../2026-07-SteadyStateCombined-Paper/figures/`, and writes `results/export_manifest.json`.
+
 ## Tests
 
 ```bash
 pytest
+```
+
+## Make targets
+
+```bash
+make test
+make eval-fixed
+make eval-riccati
+make eval-combined
+make eval-all
+make export-paper
 ```
 
 ## Repository layout
@@ -141,8 +166,10 @@ examples/
   run_fixed_gain_evaluation.py
   run_gain_optimized_evaluation.py
   run_combined_pareto.py
+scripts/
+  export_results_to_paper.py
 ```
 
 ## Next code steps
 
-- Add paper-figure export helpers that write directly into the paper repository's expected `figures/` and `tables/` folders.
+- Add LaTeX table-generation helpers for the deterministic and random-summary CSV files.
