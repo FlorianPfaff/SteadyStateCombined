@@ -58,6 +58,28 @@ Generated outputs include:
 - `results_riccati/riccati_random_summary.csv`
 - `results_riccati/riccati_random_scatter.png` if Matplotlib is available
 
+## Third evaluation: combined stochastic/set-membership Pareto sweep
+
+Run:
+
+```bash
+python examples/run_combined_pareto.py --out results_combined --alpha-grid 31 --gain-grid 25
+```
+
+This performs a deterministic 2D grid search over gains and approximation weights, then selects the best candidate for each scalarization
+
+```text
+lambda tr(Sigma) + (1-lambda) tr(P).
+```
+
+Generated outputs include:
+
+- `results_combined/combined_pareto.csv`
+- `results_combined/combined_pareto.png` if Matplotlib is available
+- `results_combined/combined_candidate_summary.csv`
+
+This experiment is intentionally presented as a low-dimensional diagnostic/Pareto study, not as a claim that the full combined gain-and-weight problem is convex.
+
 ## What the current code evaluates
 
 The fixed-gain implementation focuses on the theorem:
@@ -81,11 +103,21 @@ P = S - S H^T (H S H^T + R / alpha_v)^(-1) H S
 
 and compares a steady-state simplex sweep against a recursive greedy gain/weight baseline.
 
+The combined implementation evaluates fixed-gain/fixed-alpha steady-state descriptors
+
+```text
+Sigma = F Sigma F^T + G_w Q_s G_w^T + G_v R_s G_v^T
+P     = F P F^T / alpha_0 + G_w Q_b G_w^T / alpha_w + G_v R_b G_v^T / alpha_v
+```
+
+and constructs a Pareto curve over stochastic covariance size and bounded-error ellipsoid size.
+
 ## Suggested stronger runs
 
 ```bash
 python examples/run_fixed_gain_evaluation.py --out results_grid201 --random-systems 500 --grid 201 --seed 11
 python examples/run_gain_optimized_evaluation.py --out results_riccati_grid201 --random-systems 300 --grid 201 --step-grid 101 --seed 17
+python examples/run_combined_pareto.py --out results_combined_grid41 --alpha-grid 41 --gain-grid 41
 ```
 
 Use these for stronger paper figures and tables.
@@ -100,16 +132,17 @@ pytest
 
 ```text
 src/steady_state_combined/
-  ellipsoidal.py     fixed-gain ellipsoidal recursions, optimization, adjoint rule
-  riccati.py         gain-reoptimized fixed-alpha Riccati sweeps
-  combined.py        fixed-gain combined stochastic/set-membership helpers
-  examples.py        deterministic and random benchmark systems
+  ellipsoidal.py        fixed-gain ellipsoidal recursions, optimization, adjoint rule
+  riccati.py            gain-reoptimized fixed-alpha Riccati sweeps
+  combined.py           fixed-gain combined stochastic/set-membership helpers
+  combined_pareto.py    deterministic combined Pareto grid search
+  examples.py           deterministic and random benchmark systems
 examples/
   run_fixed_gain_evaluation.py
   run_gain_optimized_evaluation.py
+  run_combined_pareto.py
 ```
 
 ## Next code steps
 
-- Add a combined stochastic/set-membership Pareto experiment.
 - Add paper-figure export helpers that write directly into the paper repository's expected `figures/` and `tables/` folders.
