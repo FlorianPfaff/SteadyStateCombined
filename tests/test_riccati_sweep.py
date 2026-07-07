@@ -34,7 +34,7 @@ def test_grid_optimized_riccati_returns_valid_solution() -> None:
 
 def test_gain_reoptimized_greedy_baseline_converges() -> None:
     problem = deterministic_gain_optimized_problem()
-    result = stepwise_gain_trace_recursion(problem, resolution=41)
+    result = stepwise_gain_trace_recursion(problem, resolution=61)
     assert result is not None
     assert result.converged
     assert np.min(np.linalg.eigvalsh(result.P)) > -1e-8
