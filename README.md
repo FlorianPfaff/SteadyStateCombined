@@ -134,7 +134,27 @@ or simply:
 make export-paper
 ```
 
-The exporter copies CSV files into `../2026-07-SteadyStateCombined-Paper/results/`, figures into `../2026-07-SteadyStateCombined-Paper/figures/`, and writes `results/export_manifest.json`.
+Then generate LaTeX table fragments in the paper repository with:
+
+```bash
+python scripts/generate_latex_tables.py --paper-root ../2026-07-SteadyStateCombined-Paper
+```
+
+or:
+
+```bash
+make tables-paper
+```
+
+The combined target
+
+```bash
+make paper-artifacts
+```
+
+exports CSV/figure files and generates table fragments.
+
+The exporter copies CSV files into `../2026-07-SteadyStateCombined-Paper/results/`, figures into `../2026-07-SteadyStateCombined-Paper/figures/`, and writes `results/export_manifest.json`. The table generator writes LaTeX fragments into `../2026-07-SteadyStateCombined-Paper/tables/`.
 
 ## Tests
 
@@ -151,6 +171,8 @@ make eval-riccati
 make eval-combined
 make eval-all
 make export-paper
+make tables-paper
+make paper-artifacts
 ```
 
 ## Repository layout
@@ -168,8 +190,9 @@ examples/
   run_combined_pareto.py
 scripts/
   export_results_to_paper.py
+  generate_latex_tables.py
 ```
 
 ## Next code steps
 
-- Add LaTeX table-generation helpers for the deterministic and random-summary CSV files.
+- Insert generated result tables and figures into `main.tex` once the evaluations have been run.
