@@ -97,12 +97,20 @@ jobs:
             --alpha-grid "${{ steps.cfg.outputs.COMBINED_ALPHA_GRID }}" \
             --gain-grid "${{ steps.cfg.outputs.COMBINED_GAIN_GRID }}"
 
+      - name: Analyze results
+        run: |
+          python scripts/analyze_results.py \
+            --results-root . \
+            --out results_report.md
+          cat results_report.md
+
       - name: Create result bundle
         run: |
           mkdir -p paper_evaluation_artifacts
           cp -r results_grid201 paper_evaluation_artifacts/
           cp -r results_riccati_grid201 paper_evaluation_artifacts/
           cp -r results_combined_grid41 paper_evaluation_artifacts/
+          cp results_report.md paper_evaluation_artifacts/
           find paper_evaluation_artifacts -maxdepth 3 -type f | sort > paper_evaluation_artifacts/MANIFEST.txt
 
       - name: Upload paper-evaluation artifacts
