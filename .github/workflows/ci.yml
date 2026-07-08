@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-and-smoke-evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,plot]'
+
+      - name: Run tests
+        run: pytest
+
+      - name: Fixed-gain smoke evaluation
+        run: |
+          python examples/run_fixed_gain_evaluation.py \
+            --out results_smoke \
+            --random-systems 5 \
+            --grid 41 \
+            --seed 7
+
+      - name: Gain-reoptimized Riccati smoke evaluation
+        run: |
+          python examples/run_gain_optimized_evaluation.py \
+            --out results_riccati_smoke \
+            --random-systems 5 \
+            --grid 41 \
+            --step-grid 31 \
+            --seed 13
+
+      - name: Combined Pareto smoke evaluation
+        run: |
+          python examples/run_combined_pareto.py \
+            --out results_combined_smoke \
+            --alpha-grid 11 \
+            --gain-grid 7
+
+      - name: Upload smoke-evaluation artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-evaluation-results
+          path: |
+            results_smoke/**
+            results_riccati_smoke/**
+            results_combined_smoke/**
+          if-no-files-found: ignore
