@@ -1,0 +1,113 @@
+name: Paper evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Evaluation profile"
+        required: true
+        default: "standard"
+        type: choice
+        options:
+          - smoke
+          - standard
+          - strong
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out code repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,plot]'
+
+      - name: Run tests
+        run: pytest
+
+      - name: Select evaluation sizes
+        id: cfg
+        shell: bash
+        run: |
+          case "${{ inputs.profile }}" in
+            smoke)
+              echo "FIXED_RANDOM=20" >> "$GITHUB_OUTPUT"
+              echo "FIXED_GRID=81" >> "$GITHUB_OUTPUT"
+              echo "RICCATI_RANDOM=20" >> "$GITHUB_OUTPUT"
+              echo "RICCATI_GRID=81" >> "$GITHUB_OUTPUT"
+              echo "RICCATI_STEP_GRID=41" >> "$GITHUB_OUTPUT"
+              echo "COMBINED_ALPHA_GRID=21" >> "$GITHUB_OUTPUT"
+              echo "COMBINED_GAIN_GRID=15" >> "$GITHUB_OUTPUT"
+              ;;
+            standard)
+              echo "FIXED_RANDOM=200" >> "$GITHUB_OUTPUT"
+              echo "FIXED_GRID=121" >> "$GITHUB_OUTPUT"
+              echo "RICCATI_RANDOM=100" >> "$GITHUB_OUTPUT"
+              echo "RICCATI_GRID=121" >> "$GITHUB_OUTPUT"
+              echo "RICCATI_STEP_GRID=61" >> "$GITHUB_OUTPUT"
+              echo "COMBINED_ALPHA_GRID=31" >> "$GITHUB_OUTPUT"
+              echo "COMBINED_GAIN_GRID=25" >> "$GITHUB_OUTPUT"
+              ;;
+            strong)
+              echo "FIXED_RANDOM=500" >> "$GITHUB_OUTPUT"
+              echo "FIXED_GRID=201" >> "$GITHUB_OUTPUT"
+              echo "RICCATI_RANDOM=300" >> "$GITHUB_OUTPUT"
+              echo "RICCATI_GRID=201" >> "$GITHUB_OUTPUT"
+              echo "RICCATI_STEP_GRID=101" >> "$GITHUB_OUTPUT"
+              echo "COMBINED_ALPHA_GRID=41" >> "$GITHUB_OUTPUT"
+              echo "COMBINED_GAIN_GRID=41" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unknown profile: ${{ inputs.profile }}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Run fixed-gain evaluation
+        run: |
+          python examples/run_fixed_gain_evaluation.py \
+            --out results_grid201 \
+            --random-systems "${{ steps.cfg.outputs.FIXED_RANDOM }}" \
+            --grid "${{ steps.cfg.outputs.FIXED_GRID }}" \
+            --seed 11
+
+      - name: Run gain-reoptimized Riccati evaluation
+        run: |
+          python examples/run_gain_optimized_evaluation.py \
+            --out results_riccati_grid201 \
+            --random-systems "${{ steps.cfg.outputs.RICCATI_RANDOM }}" \
+            --grid "${{ steps.cfg.outputs.RICCATI_GRID }}" \
+            --step-grid "${{ steps.cfg.outputs.RICCATI_STEP_GRID }}" \
+            --seed 17
+
+      - name: Run combined Pareto evaluation
+        run: |
+          python examples/run_combined_pareto.py \
+            --out results_combined_grid41 \
+            --alpha-grid "${{ steps.cfg.outputs.COMBINED_ALPHA_GRID }}" \
+            --gain-grid "${{ steps.cfg.outputs.COMBINED_GAIN_GRID }}"
+
+      - name: Create result bundle
+        run: |
+          mkdir -p paper_evaluation_artifacts
+          cp -r results_grid201 paper_evaluation_artifacts/
+          cp -r results_riccati_grid201 paper_evaluation_artifacts/
+          cp -r results_combined_grid41 paper_evaluation_artifacts/
+          find paper_evaluation_artifacts -maxdepth 3 -type f | sort > paper_evaluation_artifacts/MANIFEST.txt
+
+      - name: Upload paper-evaluation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-evaluation-${{ inputs.profile }}
+          path: paper_evaluation_artifacts/**
+          if-no-files-found: error
