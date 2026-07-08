@@ -8,6 +8,16 @@ The companion paper/notes/results repository is separate:
 
 This repository contains reusable Python code and runnable experiments.
 
+## Continuous integration
+
+GitHub Actions runs the Python test suite and three small smoke evaluations on each push and pull request:
+
+- fixed-gain evaluation;
+- gain-reoptimized Riccati evaluation;
+- combined stochastic/set-membership Pareto evaluation.
+
+The smoke-result folders are uploaded as a workflow artifact named `smoke-evaluation-results`.
+
 ## Installation
 
 From a fresh checkout:
