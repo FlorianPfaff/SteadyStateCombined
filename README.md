@@ -24,7 +24,7 @@ A separate manually triggered workflow, **Paper evaluation**, runs larger paper-
 - `standard`: moderate-size evaluation suitable for draft iteration;
 - `strong`: larger paper-strength evaluation.
 
-The uploaded artifact is named `paper-evaluation-<profile>` and contains `results_grid201/`, `results_riccati_grid201/`, and `results_combined_grid41/`.
+The uploaded artifact is named `paper-evaluation-<profile>` and contains `results_grid201/`, `results_riccati_grid201/`, `results_combined_grid41/`, and `results_report.md`. The report summarizes the main ratios and gives a framing recommendation for the paper.
 
 ## Installation
 
@@ -188,6 +188,7 @@ make eval-fixed
 make eval-riccati
 make eval-combined
 make eval-all
+make analyze-results
 make export-paper
 make tables-paper
 make paper-artifacts
@@ -207,6 +208,7 @@ examples/
   run_gain_optimized_evaluation.py
   run_combined_pareto.py
 scripts/
+  analyze_results.py
   export_results_to_paper.py
   generate_latex_tables.py
 ```
