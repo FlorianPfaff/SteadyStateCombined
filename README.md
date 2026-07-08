@@ -18,6 +18,14 @@ GitHub Actions runs the Python test suite and three small smoke evaluations on e
 
 The smoke-result folders are uploaded as a workflow artifact named `smoke-evaluation-results`.
 
+A separate manually triggered workflow, **Paper evaluation**, runs larger paper-oriented evaluations and uploads the result bundle. Trigger it from the GitHub Actions tab and choose one of:
+
+- `smoke`: fast sanity check;
+- `standard`: moderate-size evaluation suitable for draft iteration;
+- `strong`: larger paper-strength evaluation.
+
+The uploaded artifact is named `paper-evaluation-<profile>` and contains `results_grid201/`, `results_riccati_grid201/`, and `results_combined_grid41/`.
+
 ## Installation
 
 From a fresh checkout:
