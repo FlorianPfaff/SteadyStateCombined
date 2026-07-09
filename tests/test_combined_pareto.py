@@ -12,7 +12,7 @@ from steady_state_combined.combined_pareto import (
 
 def test_fixed_gain_alpha_combined_solution_is_valid() -> None:
     problem = deterministic_combined_pareto_problem()
-    K = np.array([[0.7], [0.0]])
+    K = np.array([[1.0], [-0.5]])
     alpha = np.array([0.7, 0.2, 0.1])
     candidate = solve_combined_fixed_gain_alpha(problem, K, alpha)
     assert candidate is not None
