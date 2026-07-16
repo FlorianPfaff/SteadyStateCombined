@@ -62,6 +62,103 @@ def write_table(destination: Path, content: str) -> None:
     destination.write_text(content.strip() + "\n", encoding="utf-8")
 
 
+def row_for_method(rows: list[dict[str, str]], method: str) -> dict[str, str]:
+    for row in rows:
+        if row.get("method") == method:
+            return row
+    raise ValueError(f"Missing method row: {method}")
+
+
+def trace_reduction(step: dict[str, str], optimized: dict[str, str]) -> float:
+    step_trace = float(step["trace"])
+    optimized_trace = float(optimized["trace"])
+    return 100.0 * (1.0 - optimized_trace / step_trace)
+
+
+def generate_result_macros(paper_root: Path, strict: bool) -> bool:
+    sources = {
+        "fixed_det": paper_root / "results" / "fixed_gain" / "deterministic_summary.csv",
+        "fixed_random": paper_root / "results" / "fixed_gain" / "random_summary.csv",
+        "bound": paper_root / "results" / "fixed_gain" / "bound_check.csv",
+        "riccati_det": paper_root / "results" / "riccati" / "riccati_deterministic_summary.csv",
+        "riccati_random": paper_root / "results" / "riccati" / "riccati_random_summary.csv",
+        "combined": paper_root / "results" / "combined" / "combined_candidate_summary.csv",
+    }
+    missing = [path for path in sources.values() if not path.exists()]
+    if missing:
+        if strict:
+            raise FileNotFoundError(missing[0])
+        return False
+
+    fixed_det = read_csv(sources["fixed_det"])
+    fixed_step = row_for_method(fixed_det, "stepwise_trace_fixed_gain")
+    fixed_opt = row_for_method(fixed_det, "grid_optimized_fixed_gain")
+    fixed_random = read_csv(sources["fixed_random"])[0]
+    bound = read_csv(sources["bound"])[0]
+    riccati_det = read_csv(sources["riccati_det"])
+    riccati_step = row_for_method(riccati_det, "stepwise_gain_reoptimized")
+    riccati_opt = row_for_method(riccati_det, "steady_state_riccati_grid")
+    riccati_random = read_csv(sources["riccati_random"])[0]
+    combined = read_csv(sources["combined"])[0]
+
+    def ratio(step: dict[str, str], optimized: dict[str, str]) -> float:
+        return float(step["trace"]) / float(optimized["trace"])
+
+    def max_reduction(row: dict[str, str]) -> float:
+        value = float(row["max_ratio_trace"])
+        return 100.0 * (1.0 - 1.0 / value)
+
+    values = {
+        "FixedStepTrace": fmt_float(fixed_step["trace"], 5),
+        "FixedOptTrace": fmt_float(fixed_opt["trace"], 5),
+        "FixedDetRatio": fmt_float(ratio(fixed_step, fixed_opt), 5),
+        "FixedDetReduction": fmt_float(trace_reduction(fixed_step, fixed_opt), 4),
+        "FixedStepAlphaZero": fmt_float(fixed_step["alpha0"], 4),
+        "FixedStepAlphaW": fmt_float(fixed_step["alphaw"], 4),
+        "FixedStepAlphaV": fmt_float(fixed_step["alphav"], 4),
+        "FixedOptAlphaZero": fmt_float(fixed_opt["alpha0"], 4),
+        "FixedOptAlphaW": fmt_float(fixed_opt["alphaw"], 4),
+        "FixedOptAlphaV": fmt_float(fixed_opt["alphav"], 4),
+        "FixedRandomN": str(int(float(fixed_random["random_systems"]))),
+        "FixedRandomMedianRatio": fmt_float(fixed_random["median_ratio_trace"], 4),
+        "FixedRandomMedianReduction": fmt_float(fixed_random["median_trace_reduction_percent"], 4),
+        "FixedRandomPtf": fmt_float(fixed_random["p25_ratio_trace"], 4),
+        "FixedRandomPsf": fmt_float(fixed_random["p75_ratio_trace"], 4),
+        "FixedRandomMaxRatio": fmt_float(fixed_random["max_ratio_trace"], 4),
+        "FixedRandomMaxReduction": fmt_float(max_reduction(fixed_random), 4),
+        "FixedRandomImproved": fmt_float(100.0 * float(fixed_random["fraction_improved"]), 4),
+        "RiccatiStepTrace": fmt_float(riccati_step["trace"], 5),
+        "RiccatiOptTrace": fmt_float(riccati_opt["trace"], 5),
+        "RiccatiDetRatio": fmt_float(ratio(riccati_step, riccati_opt), 5),
+        "RiccatiDetReduction": fmt_float(trace_reduction(riccati_step, riccati_opt), 4),
+        "RiccatiStepAlphaZero": fmt_float(riccati_step["alpha0"], 4),
+        "RiccatiStepAlphaW": fmt_float(riccati_step["alphaw"], 4),
+        "RiccatiStepAlphaV": fmt_float(riccati_step["alphav"], 4),
+        "RiccatiOptAlphaZero": fmt_float(riccati_opt["alpha0"], 4),
+        "RiccatiOptAlphaW": fmt_float(riccati_opt["alphaw"], 4),
+        "RiccatiOptAlphaV": fmt_float(riccati_opt["alphav"], 4),
+        "RiccatiRandomN": str(int(float(riccati_random["random_systems"]))),
+        "RiccatiRandomMedianRatio": fmt_float(riccati_random["median_ratio_trace"], 4),
+        "RiccatiRandomMedianReduction": fmt_float(riccati_random["median_trace_reduction_percent"], 4),
+        "RiccatiRandomPtf": fmt_float(riccati_random["p25_ratio_trace"], 4),
+        "RiccatiRandomPsf": fmt_float(riccati_random["p75_ratio_trace"], 4),
+        "RiccatiRandomMaxRatio": fmt_float(riccati_random["max_ratio_trace"], 4),
+        "RiccatiRandomMaxReduction": fmt_float(max_reduction(riccati_random), 4),
+        "RiccatiRandomImproved": fmt_float(100.0 * float(riccati_random["fraction_improved"]), 4),
+        "BoundTrajectories": str(int(float(bound["trajectories"]))),
+        "BoundHorizon": str(int(float(bound["horizon"]))),
+        "BoundMaxNormalized": fmt_float(bound["max_normalized_error"], 4),
+        "BoundViolations": str(int(float(bound["violations"]))),
+        "CombinedCandidates": str(int(float(combined["candidate_count"]))),
+        "CombinedFrontier": str(int(float(combined["nondominated_count"]))),
+        "CombinedMinSigma": fmt_float(combined["min_trace_sigma"], 4),
+        "CombinedMinP": fmt_float(combined["min_trace_P"], 4),
+    }
+    content = "\n".join(rf"\newcommand{{\{name}}}{{{value}}}" for name, value in values.items())
+    write_table(paper_root / "tables" / "results_macros.tex", content)
+    return True
+
+
 def deterministic_table(rows: list[dict[str, str]], caption: str, label: str) -> str:
     body = []
     for row in rows:
@@ -241,6 +338,8 @@ def main() -> None:
             continue
         write_table(spec.destination, render_table(spec.kind, rows))
         generated.append(str(spec.destination))
+    if generate_result_macros(paper_root, strict=args.strict):
+        generated.append(str(paper_root / "tables" / "results_macros.tex"))
     print(f"Generated tables: {len(generated)}")
     print(f"Missing inputs:    {len(missing)}")
     for path in generated:

@@ -109,7 +109,7 @@ P = F P F^T / alpha_0 + S_w / alpha_w + S_v / alpha_v.
 It compares:
 
 1. repeated stepwise trace-minimal ellipsoidal approximation;
-2. steady-state approximation-weight optimization over the simplex;
+2. steady-state approximation-weight optimization using a simplex grid followed by adjoint line-search refinement;
 3. the adjoint-weighted non-myopic direction from the stepwise weights.
 
 The gain-reoptimized implementation evaluates the practical fixed-alpha Riccati equation:
@@ -119,7 +119,7 @@ S = A P A^T / alpha_0 + Q / alpha_w
 P = S - S H^T (H S H^T + R / alpha_v)^(-1) H S
 ```
 
-and compares a steady-state simplex sweep against a recursive greedy gain/weight baseline.
+and compares a steady-state simplex sweep plus baseline-seeded pattern refinement against a recursive greedy gain/weight baseline. Including the baseline weight in the refinement prevents a finite grid from creating spurious ratios below one.
 
 The combined implementation evaluates fixed-gain/fixed-alpha steady-state descriptors
 
@@ -128,13 +128,13 @@ Sigma = F Sigma F^T + G_w Q_s G_w^T + G_v R_s G_v^T
 P     = F P F^T / alpha_0 + G_w Q_b G_w^T / alpha_w + G_v R_b G_v^T / alpha_v
 ```
 
-and constructs a Pareto curve over stochastic covariance size and bounded-error ellipsoid size.
+and constructs a Pareto curve over stochastic covariance size and bounded-error ellipsoid size. The scalarization normalizes each trace by its independently attainable minimum so the result is not dominated by units or scale.
 
 ## Suggested stronger runs
 
 ```bash
 python examples/run_fixed_gain_evaluation.py --out results_grid201 --random-systems 500 --grid 201 --seed 11
-python examples/run_gain_optimized_evaluation.py --out results_riccati_grid201 --random-systems 300 --grid 201 --step-grid 101 --seed 17
+python examples/run_gain_optimized_evaluation.py --out results_riccati_grid201 --random-systems 300 --grid 201 --step-grid 101 --seed 17 --workers 16
 python examples/run_combined_pareto.py --out results_combined_grid41 --alpha-grid 41 --gain-grid 41
 ```
 
@@ -212,7 +212,3 @@ scripts/
   export_results_to_paper.py
   generate_latex_tables.py
 ```
-
-## Next code steps
-
-- Insert generated result tables and figures into `main.tex` once the evaluations have been run.

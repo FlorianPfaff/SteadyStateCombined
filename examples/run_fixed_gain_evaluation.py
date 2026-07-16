@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import csv
 import math
-import os
 import sys
 from pathlib import Path
 
@@ -26,9 +25,9 @@ if str(SRC) not in sys.path:
 from steady_state_combined import (  # noqa: E402
     bounded_error_check,
     criterion_value,
-    grid_optimize_weights,
     line_search_to_nonmyopic,
     nonmyopic_weights,
+    optimize_fixed_gain_weights,
     stepwise_trace_steady_state,
 )
 from steady_state_combined.examples import deterministic_fixed_gain_problem, random_fixed_gain_problem  # noqa: E402
@@ -43,12 +42,19 @@ def write_csv(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
     with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
 
-def plot_line_search(path: Path, rows: list[dict]) -> None:
+def style_axes(ax) -> None:
+    ax.tick_params(labelsize=7)
+    ax.grid(True, alpha=0.25, linewidth=0.5)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.7)
+
+
+def plot_line_search(path: Path, rows: list[dict], baseline: float) -> None:
     if plt is None or not rows:
         return
     eps = np.array([row["epsilon"] for row in rows], dtype=float)
@@ -56,14 +62,16 @@ def plot_line_search(path: Path, rows: list[dict]) -> None:
     finite = np.isfinite(values)
     if not np.any(finite):
         return
-    fig, ax = plt.subplots(figsize=(5.0, 3.2))
-    ax.semilogx(eps[finite], values[finite], marker="o")
-    ax.set_xlabel("line-search $\\epsilon$")
-    ax.set_ylabel("steady-state trace")
-    ax.set_title("Adjoint-weighted direction from stepwise weights")
-    ax.grid(True, alpha=0.3)
+    order = np.argsort(eps[finite])
+    fig, ax = plt.subplots(figsize=(3.45, 2.25))
+    ax.semilogx(eps[finite][order], values[finite][order], marker="o", markersize=3, linewidth=1.0)
+    ax.axhline(baseline, color="0.35", linestyle="--", linewidth=0.8, label="stepwise")
+    ax.set_xlabel("line-search step $\\epsilon$", fontsize=8)
+    ax.set_ylabel("steady-state $\\operatorname{tr}(P)$", fontsize=8)
+    ax.legend(frameon=False, fontsize=7, loc="lower left")
+    style_axes(ax)
     fig.tight_layout()
-    fig.savefig(path, dpi=200)
+    fig.savefig(path, dpi=300)
     plt.close(fig)
 
 
@@ -76,15 +84,57 @@ def plot_random_scatter(path: Path, rows: list[dict]) -> None:
         return
     lo = min(float(np.min(x)), float(np.min(y)))
     hi = max(float(np.max(x)), float(np.max(y)))
-    fig, ax = plt.subplots(figsize=(4.2, 4.0))
-    ax.scatter(x, y, s=16, alpha=0.75)
-    ax.plot([lo, hi], [lo, hi], linestyle="--")
-    ax.set_xlabel("trace, stepwise steady state")
-    ax.set_ylabel("trace, optimized steady state")
-    ax.set_title("Random fixed-gain systems")
-    ax.grid(True, alpha=0.3)
+    fig, ax = plt.subplots(figsize=(3.45, 2.55))
+    ax.scatter(x, y, s=8, alpha=0.55, linewidths=0)
+    ax.plot([lo, hi], [lo, hi], color="0.25", linestyle="--", linewidth=0.8)
+    ax.set_xlabel("stepwise $\\operatorname{tr}(P)$", fontsize=8)
+    ax.set_ylabel("steady-state-optimized $\\operatorname{tr}(P)$", fontsize=8)
+    style_axes(ax)
     fig.tight_layout()
-    fig.savefig(path, dpi=200)
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
+def plot_improvement_cdf(path: Path, rows: list[dict]) -> None:
+    if plt is None or not rows:
+        return
+    reduction = np.sort(
+        100.0
+        * (
+            1.0
+            - np.array([row["trace_ss"] for row in rows], dtype=float)
+            / np.array([row["trace_step"] for row in rows], dtype=float)
+        )
+    )
+    cumulative = np.arange(1, len(reduction) + 1, dtype=float) / len(reduction)
+    fig, ax = plt.subplots(figsize=(3.45, 2.25))
+    ax.plot(reduction, cumulative, linewidth=1.1)
+    ax.axvline(float(np.median(reduction)), color="0.35", linestyle="--", linewidth=0.8)
+    ax.set_xlabel("trace reduction (%)", fontsize=8)
+    ax.set_ylabel("empirical CDF", fontsize=8)
+    style_axes(ax)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
+def plot_deterministic_ellipsoids(path: Path, P_step: np.ndarray, P_opt: np.ndarray) -> None:
+    if plt is None:
+        return
+    angles = np.linspace(0.0, 2.0 * np.pi, 500)
+    circle = np.vstack((np.cos(angles), np.sin(angles)))
+    step = np.linalg.cholesky(P_step) @ circle
+    opt = np.linalg.cholesky(P_opt) @ circle
+    fig, ax = plt.subplots(figsize=(3.45, 2.55))
+    ax.plot(step[0], step[1], linestyle="--", linewidth=1.1, label="stepwise")
+    ax.plot(opt[0], opt[1], linewidth=1.2, label="steady-state optimized")
+    ax.set_xlabel("error component 1", fontsize=8)
+    ax.set_ylabel("error component 2", fontsize=8)
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.legend(frameon=False, fontsize=7, loc="upper left")
+    style_axes(ax)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300)
     plt.close(fig)
 
 
@@ -95,7 +145,12 @@ def run(args: argparse.Namespace) -> None:
 
     problem = deterministic_fixed_gain_problem()
     step = stepwise_trace_steady_state(problem)
-    opt = grid_optimize_weights(problem, resolution=args.grid, criterion=args.criterion)
+    opt = optimize_fixed_gain_weights(
+        problem,
+        resolution=args.grid,
+        criterion=args.criterion,
+        initial_alphas=[] if step is None else [step[0]],
+    )
     if step is None or opt is None:
         raise RuntimeError("deterministic example failed")
     alpha_step, P_step = step
@@ -132,7 +187,8 @@ def run(args: argparse.Namespace) -> None:
 
     line_rows = line_search_to_nonmyopic(problem, alpha_step, criterion=args.criterion)
     write_csv(out / "line_search_curve.csv", line_rows)
-    plot_line_search(out / "line_search_curve.png", line_rows)
+    plot_line_search(out / "line_search_curve.png", line_rows, criterion_value(P_step, args.criterion))
+    plot_deterministic_ellipsoids(out / "deterministic_ellipsoids.png", P_step, P_opt)
 
     check = bounded_error_check(
         problem,
@@ -151,10 +207,17 @@ def run(args: argparse.Namespace) -> None:
         if random_problem is None:
             continue
         random_step = stepwise_trace_steady_state(random_problem)
-        random_opt = grid_optimize_weights(random_problem, resolution=max(41, args.grid // 2), criterion=args.criterion)
-        if random_step is None or random_opt is None:
+        if random_step is None:
             continue
         alpha_s, P_s = random_step
+        random_opt = optimize_fixed_gain_weights(
+            random_problem,
+            resolution=max(41, args.grid // 2),
+            criterion=args.criterion,
+            initial_alphas=[alpha_s],
+        )
+        if random_opt is None:
+            continue
         alpha_o, P_o, _ = random_opt
         trace_step = criterion_value(P_s, "trace")
         trace_ss = criterion_value(P_o, "trace")
@@ -178,8 +241,12 @@ def run(args: argparse.Namespace) -> None:
             }
         )
 
+    if len(random_rows) != args.random_systems:
+        raise RuntimeError(f"generated {len(random_rows)} of {args.random_systems} requested random systems")
+
     write_csv(out / "random_benchmark.csv", random_rows)
     plot_random_scatter(out / "random_scatter.png", random_rows)
+    plot_improvement_cdf(out / "random_improvement_cdf.png", random_rows)
 
     if random_rows:
         ratios = np.array([row["ratio_trace"] for row in random_rows], dtype=float)
@@ -190,7 +257,9 @@ def run(args: argparse.Namespace) -> None:
             "p25_ratio_trace": float(np.percentile(ratios, 25)),
             "p75_ratio_trace": float(np.percentile(ratios, 75)),
             "max_ratio_trace": float(np.max(ratios)),
+            "min_ratio_trace": float(np.min(ratios)),
             "fraction_improved": float(np.mean(ratios > 1.0 + 1e-8)),
+            "median_trace_reduction_percent": float(np.median(100.0 * (1.0 - 1.0 / ratios))),
         }
         write_csv(out / "random_summary.csv", [summary])
 

@@ -9,4 +9,5 @@ dist/
 *.egg-info/
 results/
 results_*/
+results_report.md
 .DS_Store

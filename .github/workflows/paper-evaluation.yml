@@ -88,7 +88,8 @@ jobs:
             --random-systems "${{ steps.cfg.outputs.RICCATI_RANDOM }}" \
             --grid "${{ steps.cfg.outputs.RICCATI_GRID }}" \
             --step-grid "${{ steps.cfg.outputs.RICCATI_STEP_GRID }}" \
-            --seed 17
+            --seed 17 \
+            --workers 2
 
       - name: Run combined Pareto evaluation
         run: |

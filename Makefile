@@ -1,5 +1,7 @@
 .PHONY: test eval-fixed eval-riccati eval-combined eval-all export-paper tables-paper paper-artifacts analyze-results
 
+RICCATI_WORKERS ?= 2
+
 test:
 	pytest
 
@@ -7,7 +9,7 @@ eval-fixed:
 	python examples/run_fixed_gain_evaluation.py --out results_grid201 --random-systems 500 --grid 201 --seed 11
 
 eval-riccati:
-	python examples/run_gain_optimized_evaluation.py --out results_riccati_grid201 --random-systems 300 --grid 201 --step-grid 101 --seed 17
+	python examples/run_gain_optimized_evaluation.py --out results_riccati_grid201 --random-systems 300 --grid 201 --step-grid 101 --seed 17 --workers $(RICCATI_WORKERS)
 
 eval-combined:
 	python examples/run_combined_pareto.py --out results_combined_grid41 --alpha-grid 41 --gain-grid 41
