@@ -6,6 +6,7 @@ from steady_state_combined import FixedGainProblem, solve_fixed_gain_steady_stat
 from steady_state_combined.riccati import (
     deterministic_gain_optimized_problem,
     grid_optimize_riccati,
+    optimize_riccati_weights,
     solve_fixed_alpha_riccati,
     stepwise_gain_trace_recursion,
 )
@@ -38,3 +39,12 @@ def test_gain_reoptimized_greedy_baseline_converges() -> None:
     assert result is not None
     assert result.converged
     assert np.min(np.linalg.eigvalsh(result.P)) > -1e-8
+
+
+def test_refined_riccati_optimization_is_not_worse_than_greedy() -> None:
+    problem = deterministic_gain_optimized_problem()
+    greedy = stepwise_gain_trace_recursion(problem, resolution=31)
+    assert greedy is not None
+    result = optimize_riccati_weights(problem, resolution=31, initial_alphas=[greedy.alpha])
+    assert result is not None
+    assert result.value <= greedy.value + 1e-10
