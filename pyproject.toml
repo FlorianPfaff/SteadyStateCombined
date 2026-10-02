@@ -16,6 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+research = [
+  "scipy>=1.10"
+]
 plot = [
   "matplotlib>=3.7"
 ]
