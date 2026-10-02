@@ -24,7 +24,7 @@ A separate manually triggered workflow, **Paper evaluation**, runs larger paper-
 - `standard`: moderate-size evaluation suitable for draft iteration;
 - `strong`: larger paper-strength evaluation.
 
-The uploaded artifact is named `paper-evaluation-<profile>` and contains `results_grid201/`, `results_riccati_grid201/`, `results_combined_grid41/`, and `results_report.md`. The report summarizes the main ratios and gives a framing recommendation for the paper.
+The uploaded artifact is named `paper-evaluation-<profile>` and contains `results_grid201/`, `results_riccati_grid201/`, `results_combined_grid41/`, `results_validation/`, and `results_report.md`. The validation folder contains the continuous comparator, higher-dimensional cases, archived plants, and solver ablation. The report from the older grid evaluations is retained for historical comparison; use the continuous validation for gain-reoptimized scientific claims.
 
 ## Installation
 
@@ -37,6 +37,43 @@ python -m pip install -e .[dev,plot]
 ```
 
 For the minimal evaluation, only NumPy is required. Matplotlib is optional and only needed for PNG figures.
+
+## Authoritative matched-accuracy paper validation
+
+The earlier grid-based gain comparison used different numerical accuracy for the two designs. It overstated the median reduction on the original 300 plants (4.01% versus 2.23% after continuous refinement). The revised paper uses the following protocol, not that legacy number.
+
+Install the optional SciPy solvers and run against the committed historical cohort:
+
+```bash
+python -m pip install -e '.[dev,plot,research]'
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+python examples/run_paper_validation.py \
+  --out results_validation \
+  --historical-csv ../2026-07-SteadyStateCombined-Paper/results/riccati/riccati_random_benchmark.csv \
+  --random-systems 300 --per-dimension 50 --workers 16
+python examples/run_solver_ablation.py --validation-dir results_validation --workers 16
+```
+
+The primary archive has 452 cases: one deterministic plant, 300 historical two-state plants, 50 each in dimensions 4, 8, and 12, and one six-state synthetic tracking model. No failures are discarded or replaced. The historical cohort was selected by the older evaluator; its acceptance indices are recorded, and the new ensembles are unconditioned predetermined draws. `systems.npz` contains every selected plant at full precision. CSV files and SHA-256 manifests retain numerical diagnostics, active-bound cases, timings, and source provenance.
+
+The research module provides:
+
+- globally solved fixed-gain weighted trace via convex scalar reduction;
+- adjoint-only feasible Armijo iteration, with roundoff-level stagnation detection;
+- independent SciPy DARE/Lyapunov solutions and residual checks;
+- analytic one-step and DARE envelope gradients;
+- continuous greedy and steady-state searches with matched tolerances and positivity floors.
+
+The fixed-gain trace problem and gain-eliminated one-step trace problem are convex. The gain-reoptimized steady-state outer search is multistart and is **not globally certified**. Boundary cases are repeated at a smaller positivity floor. Reductions describe outer-bound trace, not observed MSE.
+
+After a complete run, generate the authoritative paper tables and figure:
+
+```bash
+python ../2026-07-SteadyStateCombined-Paper/scripts/generate_validation_artifacts.py \
+  --import-from results_validation
+```
+
+The generator verifies the archive hashes and derives values from individual cases. It intentionally requires the full 452-case paper profile. GitHub's smoke and standard profiles use smaller cohorts and cannot replace the paper archive. A freshly generated legacy cohort can differ from the committed historical cohort; pass the exact historical CSV above when reproducing the reported numbers.
 
 ## First evaluation: fixed-gain theorem
 
@@ -109,7 +146,7 @@ P = F P F^T / alpha_0 + S_w / alpha_w + S_v / alpha_v.
 It compares:
 
 1. repeated stepwise trace-minimal ellipsoidal approximation;
-2. steady-state approximation-weight optimization over the simplex;
+2. steady-state approximation-weight optimization using a simplex grid followed by adjoint line-search refinement;
 3. the adjoint-weighted non-myopic direction from the stepwise weights.
 
 The gain-reoptimized implementation evaluates the practical fixed-alpha Riccati equation:
@@ -119,7 +156,7 @@ S = A P A^T / alpha_0 + Q / alpha_w
 P = S - S H^T (H S H^T + R / alpha_v)^(-1) H S
 ```
 
-and compares a steady-state simplex sweep against a recursive greedy gain/weight baseline.
+and compares a steady-state simplex sweep plus baseline-seeded pattern refinement against a recursive greedy gain/weight baseline. Including the baseline weight in the refinement prevents a finite grid from creating spurious ratios below one.
 
 The combined implementation evaluates fixed-gain/fixed-alpha steady-state descriptors
 
@@ -128,17 +165,17 @@ Sigma = F Sigma F^T + G_w Q_s G_w^T + G_v R_s G_v^T
 P     = F P F^T / alpha_0 + G_w Q_b G_w^T / alpha_w + G_v R_b G_v^T / alpha_v
 ```
 
-and constructs a Pareto curve over stochastic covariance size and bounded-error ellipsoid size.
+and constructs a Pareto curve over stochastic covariance size and bounded-error ellipsoid size. The scalarization normalizes each trace by its independently attainable minimum so the result is not dominated by units or scale.
 
 ## Suggested stronger runs
 
 ```bash
 python examples/run_fixed_gain_evaluation.py --out results_grid201 --random-systems 500 --grid 201 --seed 11
-python examples/run_gain_optimized_evaluation.py --out results_riccati_grid201 --random-systems 300 --grid 201 --step-grid 101 --seed 17
+python examples/run_gain_optimized_evaluation.py --out results_riccati_grid201 --random-systems 300 --grid 201 --step-grid 101 --seed 17 --workers 16
 python examples/run_combined_pareto.py --out results_combined_grid41 --alpha-grid 41 --gain-grid 41
 ```
 
-Use these for stronger paper figures and tables.
+These reproduce the legacy grid studies. Use the matched-accuracy protocol above for the revised paper's primary gain comparisons and method ablation.
 
 With both repositories checked out as siblings, export generated artifacts into the paper repository with:
 
@@ -203,16 +240,15 @@ src/steady_state_combined/
   combined.py           fixed-gain combined stochastic/set-membership helpers
   combined_pareto.py    deterministic combined Pareto grid search
   examples.py           deterministic and random benchmark systems
+  research.py           optional SciPy continuous solvers and independent validation
 examples/
   run_fixed_gain_evaluation.py
   run_gain_optimized_evaluation.py
   run_combined_pareto.py
+  run_paper_validation.py
+  run_solver_ablation.py
 scripts/
   analyze_results.py
   export_results_to_paper.py
   generate_latex_tables.py
 ```
-
-## Next code steps
-
-- Insert generated result tables and figures into `main.tex` once the evaluations have been run.

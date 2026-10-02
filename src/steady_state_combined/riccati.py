@@ -14,7 +14,7 @@ in :mod:`steady_state_combined.ellipsoidal`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Iterable, Literal, Optional
 
 import numpy as np
 
@@ -151,6 +151,87 @@ def grid_optimize_riccati(
         if result is None:
             continue
         if best is None or result.value < best.value:
+            best = result
+    return best
+
+
+def refine_riccati_weights(
+    problem: GainOptimizedProblem,
+    alpha_start: np.ndarray,
+    criterion: Criterion = "trace",
+    initial_step: float = 0.02,
+    min_step: float = 1e-7,
+    max_evaluations: int = 2000,
+) -> Optional[RiccatiResult]:
+    """Refine a fixed-alpha DARE solution by simplex pattern search.
+
+    The six directions transfer mass between pairs of simplex coordinates.
+    Only improving feasible points are accepted, which makes this suitable for
+    seeding with the converged greedy baseline as well as with a grid point.
+    """
+
+    best = solve_fixed_alpha_riccati(problem, alpha_start, criterion=criterion)
+    if best is None:
+        return None
+
+    directions = np.array(
+        [
+            [1.0, -1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+            [1.0, 0.0, -1.0],
+            [-1.0, 0.0, 1.0],
+            [0.0, 1.0, -1.0],
+            [0.0, -1.0, 1.0],
+        ]
+    )
+    step = float(initial_step)
+    evaluations = 0
+    while step >= min_step and evaluations < max_evaluations:
+        candidates: list[RiccatiResult] = []
+        for direction in directions:
+            alpha = best.alpha + step * direction
+            if np.min(alpha) <= 1e-10:
+                continue
+            result = solve_fixed_alpha_riccati(problem, alpha, criterion=criterion)
+            evaluations += 1
+            if result is not None:
+                candidates.append(result)
+            if evaluations >= max_evaluations:
+                break
+
+        candidate = min(candidates, key=lambda result: result.value, default=None)
+        decrease_tol = 1e-13 * (1.0 + abs(best.value))
+        if candidate is not None and candidate.value < best.value - decrease_tol:
+            best = candidate
+        else:
+            step *= 0.5
+    return best
+
+
+def optimize_riccati_weights(
+    problem: GainOptimizedProblem,
+    resolution: int = 121,
+    criterion: Criterion = "trace",
+    initial_alphas: Iterable[np.ndarray] = (),
+) -> Optional[RiccatiResult]:
+    """Combine a simplex grid with baseline-seeded local DARE refinement."""
+
+    starts: list[np.ndarray] = []
+    grid_result = grid_optimize_riccati(problem, resolution=resolution, criterion=criterion)
+    if grid_result is not None:
+        starts.append(grid_result.alpha)
+    starts.extend(_validate_alpha(alpha) for alpha in initial_alphas)
+
+    best: Optional[RiccatiResult] = None
+    initial_step = max(1.0 / resolution, 1e-3)
+    for alpha in starts:
+        result = refine_riccati_weights(
+            problem,
+            alpha,
+            criterion=criterion,
+            initial_step=initial_step,
+        )
+        if result is not None and (best is None or result.value < best.value):
             best = result
     return best
 

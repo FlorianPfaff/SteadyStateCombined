@@ -13,6 +13,7 @@ runs can still be exported; use ``--strict`` to fail on missing artifacts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from dataclasses import dataclass
@@ -47,6 +48,11 @@ def default_artifacts(results_root: Path, paper_root: Path) -> list[Artifact]:
             "fixed-gain non-myopic line-search figure",
         ),
         Artifact(
+            results_root / "results_grid201" / "deterministic_ellipsoids.png",
+            paper_root / "figures" / "deterministic_ellipsoids.png",
+            "fixed-gain deterministic ellipsoid comparison",
+        ),
+        Artifact(
             results_root / "results_grid201" / "random_benchmark.csv",
             paper_root / "results" / "fixed_gain" / "random_benchmark.csv",
             "fixed-gain random benchmark",
@@ -60,6 +66,11 @@ def default_artifacts(results_root: Path, paper_root: Path) -> list[Artifact]:
             results_root / "results_grid201" / "random_scatter.png",
             paper_root / "figures" / "random_scatter.png",
             "fixed-gain random scatter figure",
+        ),
+        Artifact(
+            results_root / "results_grid201" / "random_improvement_cdf.png",
+            paper_root / "figures" / "fixed_gain_improvement_cdf.png",
+            "fixed-gain trace-reduction empirical CDF",
         ),
         Artifact(
             results_root / "results_grid201" / "bound_check.csv",
@@ -87,6 +98,11 @@ def default_artifacts(results_root: Path, paper_root: Path) -> list[Artifact]:
             "gain-reoptimized random scatter figure",
         ),
         Artifact(
+            results_root / "results_riccati_grid201" / "riccati_improvement_cdf.png",
+            paper_root / "figures" / "riccati_improvement_cdf.png",
+            "gain-reoptimized trace-reduction empirical CDF",
+        ),
+        Artifact(
             results_root / "results_combined_grid41" / "combined_pareto.csv",
             paper_root / "results" / "combined" / "combined_pareto.csv",
             "combined Pareto curve data",
@@ -97,6 +113,11 @@ def default_artifacts(results_root: Path, paper_root: Path) -> list[Artifact]:
             "combined candidate summary",
         ),
         Artifact(
+            results_root / "results_combined_grid41" / "combined_frontier.csv",
+            paper_root / "results" / "combined" / "combined_frontier.csv",
+            "combined nondominated candidate frontier",
+        ),
+        Artifact(
             results_root / "results_combined_grid41" / "combined_pareto.png",
             paper_root / "figures" / "combined_pareto.png",
             "combined Pareto figure",
@@ -104,29 +125,30 @@ def default_artifacts(results_root: Path, paper_root: Path) -> list[Artifact]:
     ]
 
 
-def copy_artifacts(artifacts: list[Artifact], strict: bool) -> dict:
+def copy_artifacts(
+    artifacts: list[Artifact],
+    results_root: Path,
+    paper_root: Path,
+    strict: bool,
+) -> dict:
     copied: list[dict] = []
     missing: list[dict] = []
     for artifact in artifacts:
+        item = {
+            "source": str(artifact.source.relative_to(results_root)),
+            "destination": str(artifact.destination.relative_to(paper_root)),
+            "description": artifact.description,
+        }
         if not artifact.source.exists():
-            item = {
-                "source": str(artifact.source),
-                "destination": str(artifact.destination),
-                "description": artifact.description,
-            }
             missing.append(item)
             if strict:
                 raise FileNotFoundError(f"Missing artifact: {artifact.source}")
             continue
         artifact.destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(artifact.source, artifact.destination)
-        copied.append(
-            {
-                "source": str(artifact.source),
-                "destination": str(artifact.destination),
-                "description": artifact.description,
-            }
-        )
+        item["bytes"] = artifact.source.stat().st_size
+        item["sha256"] = hashlib.sha256(artifact.source.read_bytes()).hexdigest()
+        copied.append(item)
     return {"copied": copied, "missing": missing}
 
 
@@ -143,10 +165,9 @@ def main() -> None:
     results_root = Path(args.results_root).resolve()
     paper_root = Path(args.paper_root).resolve()
     artifacts = default_artifacts(results_root, paper_root)
-    manifest = copy_artifacts(artifacts, strict=args.strict)
+    manifest = copy_artifacts(artifacts, results_root, paper_root, strict=args.strict)
     manifest["generated_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["results_root"] = str(results_root)
-    manifest["paper_root"] = str(paper_root)
+    manifest["path_format"] = "repository-relative"
 
     manifest_path = paper_root / "results" / "export_manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

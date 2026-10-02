@@ -6,9 +6,10 @@ Suggested command:
     python examples/run_combined_pareto.py --out results_combined --alpha-grid 31 --gain-grid 25
 
 The script performs an explicit 2D grid search over gains and approximation
-weights, then selects the best candidate for each scalarization value
-lambda tr(Sigma)+(1-lambda)tr(P). This is meant to generate a paper figure and
-to check whether the combined problem has a meaningful Pareto trade-off.
+weights, then selects the best candidate for each scalarization value after
+normalizing both traces by their independently attainable minima. This is meant
+to generate a paper figure and check whether the combined problem has a
+meaningful Pareto trade-off.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ if str(SRC) not in sys.path:
 from steady_state_combined.combined_pareto import (  # noqa: E402
     deterministic_combined_pareto_problem,
     enumerate_combined_candidates_2d,
+    nondominated_candidates,
     pareto_from_candidates,
 )
 
@@ -47,27 +49,34 @@ def write_csv(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
     with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
 
-def plot_pareto(path: Path, rows: list[dict]) -> None:
-    if plt is None or not rows:
+def plot_pareto(path: Path, rows: list[dict], frontier_rows: list[dict]) -> None:
+    if plt is None or not rows or not frontier_rows:
         return
-    trace_sigma = np.array([row["trace_sigma"] for row in rows], dtype=float)
-    trace_P = np.array([row["trace_P"] for row in rows], dtype=float)
+    trace_sigma = np.array([row["normalized_trace_sigma"] for row in rows], dtype=float)
+    trace_P = np.array([row["normalized_trace_P"] for row in rows], dtype=float)
     lambdas = np.array([row["lambda_stochastic"] for row in rows], dtype=float)
-    fig, ax = plt.subplots(figsize=(4.4, 3.6))
-    ax.plot(trace_sigma, trace_P, marker="o")
+    frontier_sigma = np.array([row["normalized_trace_sigma"] for row in frontier_rows], dtype=float)
+    frontier_P = np.array([row["normalized_trace_P"] for row in frontier_rows], dtype=float)
+    fig, ax = plt.subplots(figsize=(3.45, 2.45))
+    ax.plot(frontier_sigma, frontier_P, color="0.55", linewidth=0.8, label="grid frontier")
+    ax.scatter(trace_sigma, trace_P, s=14, zorder=3, label="scalarized designs")
     for x, y, lam in zip(trace_sigma, trace_P, lambdas):
-        ax.annotate(f"{lam:.1f}", (x, y), textcoords="offset points", xytext=(4, 4), fontsize=7)
-    ax.set_xlabel("trace of stochastic covariance")
-    ax.set_ylabel("trace of bounded-error ellipsoid")
-    ax.set_title("Combined uncertainty Pareto sweep")
-    ax.grid(True, alpha=0.3)
+        if lam in (0.0, 0.5, 0.9, 1.0):
+            offset = (3, -9) if lam == 1.0 else (3, 3)
+            ax.annotate(f"{lam:.1f}", (x, y), textcoords="offset points", xytext=offset, fontsize=6)
+    ax.set_yscale("log")
+    ax.set_xlabel("normalized $\\operatorname{tr}(\\Sigma)$", fontsize=8)
+    ax.set_ylabel("normalized $\\operatorname{tr}(P)$", fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.grid(True, alpha=0.25, linewidth=0.5)
+    ax.legend(frameon=False, fontsize=6)
     fig.tight_layout()
-    fig.savefig(path, dpi=200)
+    fig.savefig(path, dpi=300)
     plt.close(fig)
 
 
@@ -84,10 +93,13 @@ def run(args: argparse.Namespace) -> None:
         k1_range=(args.k1_min, args.k1_max),
         k2_range=(args.k2_min, args.k2_max),
     )
+    frontier = nondominated_candidates(candidates)
     results = pareto_from_candidates(candidates, lambdas)
     if not results:
         raise RuntimeError("no feasible combined candidates found")
 
+    sigma_scale = min(candidate.trace_sigma for candidate in candidates)
+    P_scale = min(candidate.trace_P for candidate in candidates)
     rows = []
     for result in results:
         c = result.candidate
@@ -97,6 +109,8 @@ def run(args: argparse.Namespace) -> None:
                 "objective": result.objective,
                 "trace_sigma": c.trace_sigma,
                 "trace_P": c.trace_P,
+                "normalized_trace_sigma": c.trace_sigma / sigma_scale,
+                "normalized_trace_P": c.trace_P / P_scale,
                 "alpha0": c.alpha[0],
                 "alphaw": c.alpha[1],
                 "alphav": c.alpha[2],
@@ -105,11 +119,27 @@ def run(args: argparse.Namespace) -> None:
             }
         )
     write_csv(out / "combined_pareto.csv", rows)
-    plot_pareto(out / "combined_pareto.png", rows)
+    frontier_rows = [
+        {
+            "trace_sigma": candidate.trace_sigma,
+            "trace_P": candidate.trace_P,
+            "normalized_trace_sigma": candidate.trace_sigma / sigma_scale,
+            "normalized_trace_P": candidate.trace_P / P_scale,
+            "alpha0": candidate.alpha[0],
+            "alphaw": candidate.alpha[1],
+            "alphav": candidate.alpha[2],
+            "K0": candidate.K[0, 0],
+            "K1": candidate.K[1, 0],
+        }
+        for candidate in frontier
+    ]
+    write_csv(out / "combined_frontier.csv", frontier_rows)
+    plot_pareto(out / "combined_pareto.png", rows, frontier_rows)
 
     summary = [
         {
             "candidate_count": len(candidates),
+            "nondominated_count": len(frontier),
             "lambda_count": len(lambdas),
             "alpha_grid": args.alpha_grid,
             "gain_grid": args.gain_grid,
@@ -117,6 +147,8 @@ def run(args: argparse.Namespace) -> None:
             "max_trace_sigma": max(c.trace_sigma for c in candidates),
             "min_trace_P": min(c.trace_P for c in candidates),
             "max_trace_P": max(c.trace_P for c in candidates),
+            "trace_sigma_scale": sigma_scale,
+            "trace_P_scale": P_scale,
         }
     ]
     write_csv(out / "combined_candidate_summary.csv", summary)

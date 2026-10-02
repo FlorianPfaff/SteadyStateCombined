@@ -257,6 +257,81 @@ def grid_optimize_weights(
     return best
 
 
+def refine_fixed_gain_weights(
+    problem: FixedGainProblem,
+    alpha_start: np.ndarray,
+    criterion: Criterion = "trace",
+    max_iter: int = 200,
+    tol: float = 1e-10,
+    max_halvings: int = 30,
+) -> Optional[tuple[np.ndarray, np.ndarray, float]]:
+    """Refine feasible weights with repeated adjoint-weighted line searches.
+
+    Each update points toward the minimizer of the local adjoint surrogate.
+    The backtracking line search accepts only strict objective decrease, so the
+    returned solution is never worse than ``alpha_start``.
+    """
+
+    alpha = normalize_alpha(alpha_start)
+    P = solve_fixed_gain_steady_state(problem, alpha)
+    if P is None:
+        return None
+    value = criterion_value(P, criterion)
+
+    for _ in range(max_iter):
+        alpha_target, _, _, _ = nonmyopic_weights(problem, alpha, P, criterion)
+        direction = alpha_target - alpha
+        if np.linalg.norm(direction) <= tol:
+            break
+
+        accepted = False
+        for halving in range(max_halvings + 1):
+            step = 1.0 / (2**halving)
+            candidate_alpha = normalize_alpha(alpha + step * direction)
+            candidate_P = solve_fixed_gain_steady_state(problem, candidate_alpha)
+            if candidate_P is None:
+                continue
+            candidate_value = criterion_value(candidate_P, criterion)
+            decrease_tol = 1e-13 * (1.0 + abs(value))
+            if candidate_value < value - decrease_tol:
+                alpha = candidate_alpha
+                P = candidate_P
+                value = candidate_value
+                accepted = True
+                break
+        if not accepted:
+            break
+
+    return alpha, P, value
+
+
+def optimize_fixed_gain_weights(
+    problem: FixedGainProblem,
+    resolution: int = 121,
+    criterion: Criterion = "trace",
+    initial_alphas: Iterable[np.ndarray] = (),
+) -> Optional[tuple[np.ndarray, np.ndarray, float]]:
+    """Combine a deterministic simplex grid with local adjoint refinement.
+
+    ``initial_alphas`` can include a baseline design. This makes finite-grid
+    benchmark comparisons conservative: the reported optimized result cannot
+    be worse merely because the grid omitted the baseline weight vector.
+    """
+
+    starts: list[np.ndarray] = []
+    grid_result = grid_optimize_weights(problem, resolution=resolution, criterion=criterion)
+    if grid_result is not None:
+        starts.append(grid_result[0])
+    starts.extend(normalize_alpha(alpha) for alpha in initial_alphas)
+
+    best: Optional[tuple[np.ndarray, np.ndarray, float]] = None
+    for alpha in starts:
+        result = refine_fixed_gain_weights(problem, alpha, criterion=criterion)
+        if result is not None and (best is None or result[2] < best[2]):
+            best = result
+    return best
+
+
 def solve_adjoint(problem: FixedGainProblem, alpha: np.ndarray, P: np.ndarray, criterion: Criterion = "trace") -> np.ndarray:
     """Solve Lambda = grad J(P) + F^T Lambda F / alpha_0."""
 
