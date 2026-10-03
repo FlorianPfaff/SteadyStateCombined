@@ -90,6 +90,22 @@ def test_block_lmi_accepts_feasible_and_rejects_infeasible_shapes() -> None:
         assert lmi_ok == direct_ok == expected
 
 
+def test_nonstrict_monotone_criteria_can_have_slack_minimizers() -> None:
+    alpha = np.array([0.5, 0.25, 0.25])
+    minimum = np.diag([1.0, 0.1])
+    slack = np.diag([1.0, 0.5])
+    A, H, K = np.zeros((2, 2)), np.eye(2), np.zeros((2, 2))
+    Q, R = alpha[1] * minimum, np.eye(2)
+    for P in (minimum, slack):
+        X = np.linalg.inv(P)
+        assert is_psd(block_lmi_matrix(A, H, Q, R, X, X @ K, alpha))
+    assert np.linalg.eigvalsh(minimum)[-1] == np.linalg.eigvalsh(slack)[-1]
+    singular_weight = np.diag([1.0, 0.0])
+    assert np.trace(singular_weight @ minimum) == np.trace(singular_weight @ slack)
+    assert np.trace(minimum) < np.trace(slack)
+    assert np.linalg.slogdet(minimum)[1] < np.linalg.slogdet(slack)[1]
+
+
 def solve_scaled_dare(A: np.ndarray, H: np.ndarray, Q: np.ndarray, R: np.ndarray, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Solve the fixed-alpha Riccati equation by monotone iteration."""
 

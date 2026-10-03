@@ -283,7 +283,8 @@ def global_fixed_trace(problem: FixedGainProblem, weight: np.ndarray | None = No
     brackets = []
     for side in ("lower", "upper"):
         for exponent in range(25):
-            margin = 0.1 * 0.5**exponent * (1.0 - rho2)
+            # Search outward from the midpoint before approaching singular limits.
+            margin = 0.5 ** (exponent + 1) * (1.0 - rho2)
             endpoint = rho2 + margin if side == "lower" else 1.0 - margin
             slope = derivative(endpoint)
             if (side == "lower" and slope < 0) or (side == "upper" and slope > 0):

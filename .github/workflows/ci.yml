@@ -22,7 +22,7 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev,plot,research]'
+          python -m pip install -e '.[dev,plot,research,certification,reference]'
 
       - name: Run tests
         run: pytest

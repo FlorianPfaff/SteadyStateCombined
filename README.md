@@ -213,6 +213,85 @@ The exporter copies CSV files into `../2026-07-SteadyStateCombined-Paper/results
 
 ## Tests
 
+The expanded research modules add greedy-optimality diagnostics, verified
+joint gain/weight trace certificates, and local combined worst-case MSE
+optimization. The expanded manuscript and frozen evaluation archives live
+in the separate paper repository.
+The original conference evaluation remains available above.
+
+Install the additional verification and independent SDP backends with:
+
+```bash
+python -m pip install -e '.[dev,plot,research,certification,reference]'
+```
+
+The certified evaluation reuses the exact archived plants in the paper
+repository. It retains all selected cases, checkpoints each search, and
+independently replays every returned certificate:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python examples/run_certified_evaluation.py \
+  --validation-dir ../2026-07-SteadyStateCombined-Paper/results/validation \
+  --out results_certified --workers 16
+python -m steady_state_combined.verify_certificate results_certified/certificates/case_0.json.gz
+```
+
+The default target is a verified relative gap of 0.001, with 100,000
+subdivisions or 1,800 seconds per plant. A budget-limited run keeps its
+verified bounds without claiming that the target was reached. Certificates
+bound the infimum on the open simplex and use the exact stored binary input
+matrices. They do not certify physical-model uncertainty or boundary
+attainment. The combined MSE optimizer remains local; its smoothing error
+and stationarity diagnostics are distinct from global trace certificates.
+
+Run the paired mechanism study and original-archive diagnostics with:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python examples/run_greedy_mechanisms.py \
+  --validation-dir ../2026-07-SteadyStateCombined-Paper/results/validation \
+  --out results_mechanisms --workers 16
+```
+
+The expanded study also uses a matched one-step spectral-risk SDP, a local
+two-adjoint combined-MSE solver, and paired controlled tracking:
+
+```bash
+python -m pip install -e '.[dev,plot,research,certification,reference]'
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+python examples/run_combined_mse_evaluation.py \
+  --validation-dir ../2026-07-SteadyStateCombined-Paper/results/validation \
+  --out results_combined_mse --workers 12
+python examples/run_controlled_tracking.py \
+  --combined-dir results_combined_mse --out results_tracking --workers 8
+python examples/run_combined_sensitivity.py \
+  --combined-dir results_combined_mse --out results_sensitivity --workers 12
+python examples/run_sdp_crosscheck.py \
+  --validation-dir ../2026-07-SteadyStateCombined-Paper/results/validation \
+  --out results_sdp --workers 12
+python examples/verify_expanded_archive.py \
+  results_combined_mse/combined_mse_manifest.json --workers 8
+```
+
+`verify_expanded_archive.py` also accepts a certification or tracking
+manifest. It verifies every recorded output hash and replays each included
+certificate, without invoking the optimizer. The paper archive contains
+frozen source bundles for the recorded runs, since development continued
+between experiments.
+
+The recorded expansion certifies all 452 archived trace designs within a
+0.1% global gap. The combined study has 119 successful matched comparisons
+and seven retained greedy-baseline convergence failures; its median
+risk-bound reduction among those 119 cases is 17.79%. Only 25 combined
+designs meet the smooth stationarity tolerance. The remaining outputs are
+feasible improvements with explicit stagnation or iteration-limit status,
+not certified combined optima. Tracking uses deterministic bias sequences
+independent of Gaussian noise, with trajectory-level paired confidence
+intervals. It never treats Gaussian total error as deterministically bounded.
+
+The SDP cross-check uses the DARE shape only as a coordinate preconditioner
+and preserves the physical trace objective. Its independent formulation
+is an implementation check, not a theorem or an interval certificate.
+
 ```bash
 pytest
 ```
