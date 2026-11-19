@@ -11,6 +11,7 @@ from flint import arb, arb_mat, ctx, fmpq_mat
 
 from steady_state_combined.certification import (
     ROOT,
+    _reaching_horizon,
     certify_steady_trace,
     raw_dare,
     split_triangle,
@@ -173,3 +174,94 @@ def test_invalid_covariances_and_inconclusive_bounds_are_not_certified():
     assert verify_trace_certificate(result.certificate)["valid"]
     with pytest.raises(ValueError, match="weights"):
         finite_riccati_trace(problem_record(scalar_problem()), [0, 1, 1], 5)
+
+
+def slow_unobservable_problem():
+    """Detectable, but the 0.99 mode is unobservable: the invariant trace is unbounded for alpha_0 <= 0.99**2."""
+    return GainOptimizedProblem(np.diag([0.99, 0.5]), np.array([[0.0, 1.0]]), np.eye(2), np.eye(1))
+
+
+def test_reaching_horizon_matches_direct_iteration_and_respects_the_cap():
+    problem = slow_unobservable_problem()
+    for weights in ([0.97, 0.5, 0.5], [Fraction(98, 100), Fraction(1, 50), 1], [0.5, 1, 1]):
+        a = np.array(list(map(float, weights)))
+        information = problem.H.T @ np.linalg.solve(problem.R, problem.H) * a[2]
+        P, traces = np.zeros((2, 2)), []
+        for _ in range(300):
+            prior = problem.A @ P @ problem.A.T / a[0] + problem.Q / a[1]
+            P = np.linalg.inv(np.linalg.inv(prior) + information)
+            traces.append(np.trace(P))
+        assert _reaching_horizon(problem, weights, 0.5 * traces[0], 4096) == 1
+        for steps in (2, 3, 17, 64, 65, 200, 300):
+            target = 0.5 * (traces[steps - 2] + traces[steps - 1])
+            assert _reaching_horizon(problem, weights, target, 4096) == steps
+            assert _reaching_horizon(problem, weights, target, steps) == steps
+            assert _reaching_horizon(problem, weights, target, steps - 1) is None
+    # With a stabilizing solution the iterate converges: a target above its limit is never reached.
+    limit = np.trace(raw_dare(problem, [0.99, 0.5, 0.5])[0])
+    assert _reaching_horizon(problem, [0.99, 0.5, 0.5], 1.01 * limit, 4096) is None
+    assert _reaching_horizon(problem, [0.99, 0.5, 0.5], 0.5 * limit, 4096) is not None
+
+
+def test_slow_unobservable_mode_is_closed_by_a_longer_horizon():
+    # A 64-step iterate at the corner of an infeasible sliver stays below the incumbent however small the sliver
+    # gets, so the search used to bisect it until the budget ran out (gap above 200 % after 300 subdivisions).
+    result = certify_steady_trace(slow_unobservable_problem(), [0.99, 0.0099, 0.0001], rtol=0.05, max_nodes=300)
+    assert result.status == "certified_gap"
+    assert result.relative_gap <= 0.05
+    horizons = [leaf["iterations"] for leaf in result.certificate["leaves"] if leaf.get("mode") == "finite"]
+    assert horizons and max(horizons) > 64
+    verification = verify_trace_certificate(result.certificate)
+    assert verification["valid"] and verification["gap_achieved"]
+
+
+def coupled_slow_problem(n=4, slow=0.99):
+    """Like slow_unobservable_problem, but the unobserved slow state is driven by the others."""
+    rng = np.random.default_rng(1)
+    A, H = np.zeros((n, n)), np.zeros((1, n))
+    A[0, 0], A[0, 1:], A[1:, 1:] = slow, 0.1, 0.5 * np.eye(n - 1) + 0.05 * rng.normal(size=(n - 1, n - 1))
+    H[:, 1:] = rng.normal(size=(1, n - 1))
+    return GainOptimizedProblem(A, H, np.eye(n), np.eye(1))
+
+
+def test_extended_leaves_replay_and_resume_on_a_coupled_plant(tmp_path):
+    problem, checkpoint = coupled_slow_problem(), tmp_path / "checkpoint.json"
+    alpha = [0.99**2 + 0.6 * (1 - 0.99**2), 0.39 * (1 - 0.99**2), 0.01 * (1 - 0.99**2)]
+    result = certify_steady_trace(problem, alpha, rtol=0.05, max_nodes=300, checkpoint_path=checkpoint)
+    assert result.status == "certified_gap"
+    assert max(leaf["iterations"] for leaf in result.certificate["leaves"]) > 64
+    assert verify_trace_certificate(result.certificate)["gap_achieved"]
+    assert certify_steady_trace(problem, rtol=0.05, max_nodes=0, checkpoint_path=checkpoint).status == "certified_gap"
+    # A cap below the horizon that the blocking leaves need changes nothing: they keep the fallback horizon.
+    capped = certify_steady_trace(problem, alpha, rtol=0.05, max_nodes=40, max_horizon=80)
+    assert capped.status == "budget_limit"
+    assert max(leaf["iterations"] for leaf in capped.certificate["leaves"]) == 64
+    assert verify_trace_certificate(capped.certificate)["valid"]
+
+
+def test_long_horizon_bounds_are_recorded_only_in_a_form_the_replay_accepts(monkeypatch):
+    from steady_state_combined import certification
+
+    problem = coupled_slow_problem()
+    record, weights = problem_record(problem), (Fraction(39, 40), Fraction(1, 50), Fraction(1, 50))
+    iterations = _reaching_horizon(problem, weights, 1e4, 4096)
+    assert iterations > 64
+    leaf = certification._replayable_bound(record, "", weights, iterations, 1.0, 128, 1024, float("inf"))
+    assert leaf["mode"] == "finite" and float(rational(leaf["lower"])) > 0.99e4
+    assert rational(leaf["lower"]) <= endpoint(finite_riccati_trace(record, weights, iterations, 128, schur=True))
+    # The Schur recursion of the replay breaks down on long diverging iterates of larger plants. Then only the
+    # rounded kernel, with every transition verified as in the replay, may supply the record.
+    information_form = certification.finite_riccati_trace
+
+    def schur_breaks_down(record, weights, iterations, precision=128, *, schur=False):
+        if schur:
+            raise ZeroDivisionError("singular matrix in solve()")
+        return information_form(record, weights, iterations, precision)
+
+    monkeypatch.setattr(certification, "finite_riccati_trace", schur_breaks_down)
+    leaf = certification._replayable_bound(record, "", weights, iterations, 1.0, 128, 1024, float("inf"))
+    assert leaf["mode"] == "rounded" and leaf["iterations"] == iterations and float(rational(leaf["lower"])) > 0.99e4
+    replayed = rounded_riccati_trace(record, weights, iterations, leaf["precision"], verify_steps=True)
+    assert rational(leaf["lower"]) <= endpoint(replayed)
+    # Out of time, nothing is recorded rather than something unchecked.
+    assert certification._replayable_bound(record, "", weights, iterations, 1.0, 128, 1024, 0.0) is None

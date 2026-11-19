@@ -75,6 +75,8 @@ def main():
     parser.add_argument("--rtol", type=float, default=1e-3)
     parser.add_argument("--max-seconds", type=float, default=1800)
     parser.add_argument("--max-nodes", type=int, default=100_000)
+    parser.add_argument("--max-horizon", type=int, default=4096,
+                        help="longest finite Riccati horizon for regions without a stabilizing solution")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     source_paths = sorted((ROOT / "src").rglob("*.py")) + [Path(__file__)]
@@ -89,7 +91,7 @@ def main():
         cases = [row for row in csv.DictReader(stream) if args.cases is None or int(row["case"]) in args.cases]
     if args.cases is not None and set(args.cases) != {int(row["case"]) for row in cases}:
         raise ValueError("requested case absent from archive")
-    options = {key: getattr(args, key) for key in ("rtol", "max_seconds", "max_nodes")}
+    options = {key: getattr(args, key) for key in ("rtol", "max_seconds", "max_nodes", "max_horizon")}
     with np.load(inputs / "systems.npz") as archive:
         tasks = [(case, {key: archive[f"case_{case['case']}_{key}"] for key in ("A", "H", "Q", "R")},
                   str(args.out), options) for case in cases]
