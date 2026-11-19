@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import warnings
+from pathlib import Path
+
 import numpy as np
 
 from steady_state_combined import (
@@ -67,3 +70,13 @@ def test_fixed_alpha_solution_is_positive_semidefinite() -> None:
     P = solve_fixed_gain_steady_state(problem, alpha)
     assert P is not None
     assert np.min(np.linalg.eigvalsh(P)) > -1e-8
+
+
+def test_every_source_file_compiles_without_warnings() -> None:
+    root = Path(__file__).resolve().parents[1]
+    paths = sorted(path for folder in ("src", "examples", "scripts", "tests") for path in (root / folder).rglob("*.py"))
+    assert len(paths) > 40
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for path in paths:
+            compile(path.read_text(encoding="utf-8"), str(path), "exec")

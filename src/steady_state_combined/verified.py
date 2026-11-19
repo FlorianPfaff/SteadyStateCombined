@@ -152,6 +152,9 @@ def rounded_riccati_trace(record: dict, weights, iterations: int, precision: int
             enclosure = (prior.inv() + information).inv()
             enclosure = (enclosure + enclosure.transpose()) / 2
             midpoint = [[endpoint(enclosure[i, j].mid()) for j in range(n)] for i in range(n)]
+            # Mirror the triangle positive_definite reads, before the radius is taken: the rational iterate is
+            # then exactly symmetric by construction, not merely through Arb's commutative rounding of x + y.
+            midpoint = [[midpoint[max(i, j)][min(i, j)] for j in range(n)] for i in range(n)]
             radius = max(sum(endpoint(abs(enclosure[i, j] - ball(midpoint[i][j])), upper=True)
                              for j in range(n)) for i in range(n))
             scale = max(abs(midpoint[i][i]) for i in range(n))

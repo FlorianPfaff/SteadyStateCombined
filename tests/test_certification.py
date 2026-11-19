@@ -3,6 +3,7 @@ import csv
 from fractions import Fraction
 import gzip
 import hashlib
+from itertools import count
 import json
 from pathlib import Path
 import subprocess
@@ -29,6 +30,7 @@ from steady_state_combined.research import continuous_steady_trace, solve_dare
 from steady_state_combined.riccati import GainOptimizedProblem, deterministic_gain_optimized_problem
 from steady_state_combined.verified import (
     ball,
+    decode_matrix,
     enclose_candidate,
     endpoint,
     finite_riccati_trace,
@@ -103,6 +105,31 @@ def test_downward_rounded_iterations_are_independently_verified():
     direct = finite_riccati_trace(record, weights, 50, precision=512)
     rounded = rounded_riccati_trace(record, weights, 50, precision=128, verify_steps=True)
     assert float(endpoint(rounded)) <= float(endpoint(direct, upper=True)) + 1e-14
+    np.testing.assert_allclose(float(rounded), float(direct), rtol=1e-12)
+
+
+def test_rounded_iterates_are_exactly_symmetric_even_if_mirrored_midpoints_disagree(monkeypatch):
+    problem = deterministic_gain_optimized_problem()
+    weights = [Fraction(4, 5), Fraction(1, 10), Fraction(1, 5)]
+    record = problem_record(problem)
+    iterates, calls = [], count()
+
+    def recording_decode(matrix):
+        if isinstance(matrix[0][0], Fraction):
+            iterates.append(matrix)
+        return decode_matrix(matrix)
+
+    def skewed_endpoint(value, upper=False):
+        # Every midpoint extraction is displaced differently; the rigorous upper bounds are left alone.
+        return endpoint(value, upper) + (0 if upper else Fraction(next(calls) % 5, 2**70))
+
+    monkeypatch.setattr("steady_state_combined.verified.decode_matrix", recording_decode)
+    monkeypatch.setattr("steady_state_combined.verified.endpoint", skewed_endpoint)
+    rounded = rounded_riccati_trace(record, weights, 50, precision=128, verify_steps=True)
+    assert next(calls) and iterates
+    assert all(m[i][j] == m[j][i] for m in iterates for i in range(problem.n) for j in range(i))
+    direct = finite_riccati_trace(record, weights, 50, precision=512)
+    assert endpoint(rounded) <= endpoint(direct, upper=True)
     np.testing.assert_allclose(float(rounded), float(direct), rtol=1e-12)
 
 

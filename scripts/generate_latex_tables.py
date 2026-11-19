@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate LaTeX table fragments from exported evaluation CSV files.
+r"""Generate LaTeX table fragments from exported evaluation CSV files.
 
 The expected workflow is:
 

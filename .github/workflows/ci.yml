@@ -24,6 +24,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev,plot,research,certification,reference]'
 
+      - name: Lint (syntax errors, pyflakes, invalid escape sequences)
+        run: ruff check --select E9,F,W605 .
+
       - name: Run tests
         run: pytest
 
