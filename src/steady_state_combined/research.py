@@ -318,7 +318,12 @@ def adjoint_fixed_trace(
         target /= target.sum()
         direction = target - alpha
         slope = float(gradient @ direction)
-        if slope >= 0:
+        if not slope < 0:
+            # With a negative gradient, slope <= (alpha.sum() - 1) * G exactly, G = -gradient @ alpha (Cauchy-Schwarz),
+            # and rounding adds at most 9 eps * G: such a slope means optimal to working precision, not a failure.
+            roundoff = (alpha.sum() - 1.0 + 9 * np.finfo(float).eps) * -float(gradient @ alpha)
+            if contributions.min() > np.finfo(float).tiny and slope <= roundoff:
+                break
             raise RuntimeError("adjoint direction failed descent check")
         for halving in range(45):
             step = 2.0 ** (-halving)
