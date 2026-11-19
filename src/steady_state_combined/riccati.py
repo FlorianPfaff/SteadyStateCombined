@@ -103,6 +103,11 @@ def solve_fixed_alpha_riccati(
     The function returns ``None`` if the iteration diverges, the innovation
     matrix becomes singular, or the resulting closed loop fails the fixed-alpha
     stability check ``rho((I-KH)A)/sqrt(alpha_0)<1``.
+
+    The stopping test compares a step with ``tol * (1 + norm(P))`` and the bounds on ``P`` are absolute, so
+    shapes of roughly unit size are presumed. In much smaller units the test is met before the iteration has
+    converged; in much larger ones a valid shape is rejected. Scaling ``Q`` and ``R`` by ``c`` scales ``P``
+    by ``c`` and leaves the gain unchanged, so rescale such a problem before calling this.
     """
 
     alpha = _validate_alpha(alpha)
@@ -250,6 +255,8 @@ def stepwise_gain_trace_recursion(
     posterior shape obtained from ``riccati_update(problem, P_k, alpha)`` and
     selects the alpha/gain minimizing the current-step criterion. The resulting
     limiting value is the gain-reoptimized analogue of the greedy baseline.
+
+    Like ``solve_fixed_alpha_riccati``, this presumes shapes of roughly unit size; see the note there.
     """
 
     P = np.eye(problem.n) if initial_P is None else sym(initial_P)

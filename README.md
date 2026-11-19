@@ -33,10 +33,19 @@ From a fresh checkout:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .[dev,plot]
+python -m pip install -e '.[dev,plot]'
 ```
 
 For the minimal evaluation, only NumPy is required. Matplotlib is optional and only needed for PNG figures.
+
+The later studies need optional extras:
+
+- `research`: SciPy, for the continuous solvers and the matched-accuracy validation;
+- `certification`: SciPy and python-flint, for verified trace certificates and their replay;
+- `reference`: CVXPY and Clarabel, for the independent SDP cross-check;
+- `plot`: Matplotlib, and `dev`: pytest and Ruff.
+
+`python -m pip install -r requirements.txt` installs the package with all of them.
 
 ## Authoritative matched-accuracy paper validation
 
@@ -278,6 +287,12 @@ certificate, without invoking the optimizer. The paper archive contains
 frozen source bundles for the recorded runs, since development continued
 between experiments.
 
+Both verification commands judge the gap themselves rather than trusting
+the tolerance stored in a certificate: they exit with status 3 when the
+bounds are valid but do not prove the relative gap given with `--rtol`
+(default 0.001). The archive check also requires every table row that cites
+a certificate hash to agree with a replayed certificate.
+
 The recorded expansion certifies all 452 archived trace designs within a
 0.1% global gap. The combined study has 119 successful matched comparisons
 and seven retained greedy-baseline convergence failures; its median
@@ -314,20 +329,37 @@ make paper-artifacts
 
 ```text
 src/steady_state_combined/
-  ellipsoidal.py        fixed-gain ellipsoidal recursions, optimization, adjoint rule
-  riccati.py            gain-reoptimized fixed-alpha Riccati sweeps
-  combined.py           fixed-gain combined stochastic/set-membership helpers
-  combined_pareto.py    deterministic combined Pareto grid search
-  examples.py           deterministic and random benchmark systems
-  research.py           optional SciPy continuous solvers and independent validation
+  ellipsoidal.py          fixed-gain ellipsoidal recursions, optimization, adjoint rule
+  riccati.py              gain-reoptimized fixed-alpha Riccati sweeps
+  combined.py             fixed-gain combined stochastic/set-membership helpers
+  combined_pareto.py      deterministic combined Pareto grid search
+  examples.py             deterministic and random benchmark systems
+  research.py             optional SciPy continuous solvers and independent validation
+  diagnostics.py          greedy-optimality diagnostics for fixed-gain weight design
+  combined_mse.py         local combined worst-case MSE design with two Lyapunov adjoints
+  sdp_reference.py        optional independent SDP references
+  tracking_validation.py  controlled tracking validation with bounded disturbances
+  verified.py             verified-arithmetic kernels with exact rational serialization
+  verified_riccati.py     verified Riccati subsolution lower bounds
+  certification.py        verified branch-and-bound trace certificates
+  verify_certificate.py   independent replay of trace certificates
+  verified_combined.py    verified feasible combined-risk bounds
 examples/
   run_fixed_gain_evaluation.py
   run_gain_optimized_evaluation.py
   run_combined_pareto.py
   run_paper_validation.py
   run_solver_ablation.py
+  run_greedy_mechanisms.py
+  run_certified_evaluation.py
+  run_combined_mse_evaluation.py
+  run_combined_sensitivity.py
+  run_controlled_tracking.py
+  run_sdp_crosscheck.py
+  verify_expanded_archive.py
 scripts/
   analyze_results.py
   export_results_to_paper.py
   generate_latex_tables.py
+tests/                    pytest suite; certification and SDP tests are skipped without their extras
 ```

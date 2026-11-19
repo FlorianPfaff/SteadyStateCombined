@@ -79,6 +79,42 @@ def _choose_horizon(problem, weights, accuracy, max_horizon):
     return max_horizon
 
 
+def _reaching_horizon(problem, weights, target, max_horizon):
+    """Shortest horizon whose floating-point trace from zero reaches target, or None. Chooses work only.
+
+    A k-step prior Riccati map has the form X -> E + F X (I + G X)^-1 F^T and such maps compose, so repeated
+    squaring finds the horizon in O(log max_horizon) small solves instead of max_horizon iterations.
+    """
+    a = np.array(list(map(float, weights)))
+    eye = np.eye(problem.n)
+
+    def compose(first, second):
+        (F1, G1, E1), (F2, G2, E2) = first, second
+        middle = np.linalg.inv(eye + E1 @ G2)
+        return F2 @ middle @ F1, G1 + F1.T @ G2 @ middle @ F1, E2 + F2 @ middle @ E1 @ F2.T
+
+    def reached(steps):
+        # steps[2] is the prior after applying the map to zero; the bound is the posterior trace.
+        return np.trace(np.linalg.solve(eye + steps[2] @ information, steps[2])) >= target
+
+    try:
+        with np.errstate(all="ignore"):
+            information = problem.H.T @ np.linalg.solve(problem.R, problem.H) * a[2]
+            powers = [(problem.A / np.sqrt(a[0]), information, problem.Q / a[1])]
+            while not reached(powers[-1]):
+                if 2 ** (len(powers) - 1) >= max_horizon:
+                    return None
+                powers.append(compose(powers[-1], powers[-1]))
+            below, horizon = None, 1
+            for exponent in reversed(range(len(powers) - 1)):
+                candidate = powers[exponent] if below is None else compose(below, powers[exponent])
+                if not reached(candidate):
+                    below, horizon = candidate, horizon + 2**exponent
+    except np.linalg.LinAlgError:
+        return None
+    return horizon if horizon <= max_horizon else None
+
+
 def _bound_region(problem, record, path, vertices, accuracy, start_precision, max_precision, max_horizon):
     weights = upper_corner(vertices)
     precision = start_precision
@@ -91,6 +127,10 @@ def _bound_region(problem, record, path, vertices, accuracy, start_precision, ma
         except (ValueError, ZeroDivisionError, OverflowError, np.linalg.LinAlgError):
             precision *= 2
     iterations = _choose_horizon(problem, weights, accuracy, max_horizon)
+    return _finite_bound(record, path, weights, iterations, accuracy, start_precision, max_precision)
+
+
+def _finite_bound(record, path, weights, iterations, accuracy, start_precision, max_precision):
     for mode in ("finite", "rounded"):
         precision = start_precision
         while precision <= (min(256, max_precision) if mode == "finite" else max_precision):
@@ -106,6 +146,71 @@ def _bound_region(problem, record, path, vertices, accuracy, start_precision, ma
             except (ValueError, ZeroDivisionError, OverflowError):
                 precision *= 2
     return {"path": path, "iterations": 0, "precision": start_precision, "lower": "0", "unresolved": True}
+
+
+def _replayable_bound(record, path, weights, iterations, accuracy, start_precision, max_precision, deadline):
+    """Long-horizon bound in a form the replay accepts, or None.
+
+    The replay recomputes a finite iterate with the Schur recursion, which loses far more precision than the
+    information form on a diverging iterate, so that recursion has to confirm the record first. Failing that,
+    the rounded kernel is used with every transition verified, exactly as the replay runs it.
+    """
+    precision = max(128, start_precision)
+    while precision <= min(256, max_precision):
+        try:
+            with ctx.workprec(precision):
+                enclosed = finite_riccati_trace(record, weights, iterations, precision)
+                lower, upper = endpoint(enclosed), endpoint(enclosed, upper=True)
+                if upper - lower > rational(accuracy):
+                    raise ValueError("Riccati enclosure is too wide")
+                lower = max(Fraction(0), lower * (1 - Fraction(1, 2**40)))
+                if lower <= endpoint(finite_riccati_trace(record, weights, iterations, precision, schur=True)):
+                    return {"path": path, "iterations": iterations, "precision": precision, "lower": str(lower),
+                            "mode": "finite"}
+        except (ValueError, ZeroDivisionError, OverflowError):
+            pass
+        precision *= 2
+    precision = max(128, start_precision)
+    while precision <= max_precision and perf_counter() < deadline:
+        try:
+            with ctx.workprec(precision):
+                enclosed = rounded_riccati_trace(record, weights, iterations, precision, verify_steps=True)
+                lower, upper = endpoint(enclosed), endpoint(enclosed, upper=True)
+                if upper - lower > rational(accuracy):
+                    raise ValueError("Riccati enclosure is too wide")
+                lower = max(Fraction(0), lower * (1 - Fraction(1, 2**40)))
+            return {"path": path, "iterations": iterations, "precision": precision, "lower": str(lower),
+                    "mode": "rounded"}
+        except (ValueError, ZeroDivisionError, OverflowError):
+            precision *= 2
+    return None
+
+
+def _extend_region(problem, record, item, vertices, target, accuracy, start_precision, max_precision, max_horizon,
+                   deadline):
+    """Stronger record for a leaf bounded with the fallback horizon, or the leaf's own record.
+
+    Without a stabilizing solution of the corner DARE the iterate from zero can grow without bound, yet the fixed
+    fallback horizon may leave it below the incumbent however small the region gets. Any horizon is a valid
+    bound, so the shortest one that reaches the target is tried, up to max_horizon. The work grows with it: the
+    rounded kernel costs milliseconds per step for ten states, and the replay repeats it.
+    """
+    if item.get("mode") not in ("finite", "rounded"):
+        return item
+    weights = upper_corner(vertices)
+    try:
+        # Same test as _choose_horizon, so that only its fallback horizon is ever replaced.
+        raw_dare(problem, weights)
+        return item
+    except (ValueError, np.linalg.LinAlgError, FloatingPointError):
+        pass
+    iterations = _reaching_horizon(problem, weights, target, max_horizon)
+    if iterations is None or iterations <= item["iterations"]:
+        return item
+    extended = _replayable_bound(
+        record, item["path"], weights, iterations, accuracy, start_precision, max_precision, deadline
+    )
+    return extended if extended is not None and rational(extended["lower"]) > rational(item["lower"]) else item
 
 
 @dataclass(frozen=True)
@@ -159,6 +264,13 @@ def certify_steady_trace(
     ``max_nodes`` counts additional subdivisions in this invocation.
     All retained leaves, including pruned ones, form a complete cover and
     are written to the certificate. A checkpoint can be verified and resumed.
+
+    Where the DARE of a region's corner has no stabilizing solution (an unobservable mode that those weights
+    make unstable), the region is bounded by a finite iterate. When such a leaf blocks the search it is bounded
+    once more with the shortest horizon that closes it, up to ``max_horizon``. A mode too slow for that horizon
+    still ends as ``budget_limit``. Long horizons are costly: one such bound can take seconds for ten states,
+    ``max_seconds`` is checked only between bounds and can be exceeded by one of them, and the replay, which a
+    resume runs on its checkpoint within the same time budget, repeats the work.
     """
     if rtol <= 0 or atol < 0 or not np.isfinite([rtol, atol, max_seconds]).all() or max_seconds < 0:
         raise ValueError("invalid tolerances or time budget")
@@ -226,6 +338,7 @@ def certify_steady_trace(
     previous_nodes = certificate["subdivisions"]
     previous_seconds = certificate["seconds"]
     nodes = 0
+    extended = set()
     last_checkpoint = perf_counter()
 
     def snapshot(status):
@@ -249,6 +362,19 @@ def certify_steady_trace(
         if lower >= upper:
             continue
         vertices = triangle_from_path(key)
+        if key not in extended:
+            # The leaf that blocks the search gets one attempt at a longer horizon before it is subdivided. The
+            # target lies past the incumbent by the enclosure width the kernel accepts plus the proposal's error.
+            extended.add(key)
+            stronger = _extend_region(
+                problem, record, leaves[key], vertices, float(upper) + 2 * accuracy, accuracy,
+                start_precision, max_precision, max_horizon, started + max_seconds,
+            )
+            if stronger is not leaves[key]:
+                leaves[key] = stronger
+                if rational(stronger["lower"]) < upper:
+                    heapq.heappush(heap, (rational(stronger["lower"]), key))
+                continue
         children = split_triangle(vertices)
         child_records = []
         for digit, child in enumerate(children):

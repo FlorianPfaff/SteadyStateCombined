@@ -219,6 +219,12 @@ def stepwise_trace_steady_state(
 
     Returns ``(alpha, P)`` where ``alpha`` is the limiting current-step weight
     vector and ``P`` the limiting shape matrix.
+
+    The stopping test compares a step with ``tol * (1 + norm(P))`` and the recursion uses absolute floors and
+    bounds of the same kind, so it presumes shapes of roughly unit size. In much smaller units the test is
+    met before the recursion has converged; in much larger ones a valid shape is rejected. The problem is
+    homogeneous (scaling ``Q`` and ``R`` by ``c`` scales ``P`` by ``c`` and leaves ``alpha`` unchanged), so
+    rescale such a problem before calling this.
     """
 
     P = np.eye(problem.n) if initial_P is None else sym(initial_P)

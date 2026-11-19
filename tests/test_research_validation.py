@@ -131,6 +131,37 @@ def test_adjoint_stops_at_roundoff_without_thousands_of_tiny_steps() -> None:
     np.testing.assert_allclose(adjoint.value, reference.value, rtol=1e-8)
 
 
+def test_adjoint_returns_optimum_when_descent_slope_is_rounding_noise() -> None:
+    from steady_state_combined.ellipsoidal import FixedGainProblem
+
+    # rho(F) = 0.97 makes the gradient about 100 times the value: the second-order slope drops below its rounding
+    # error before the first-order KKT test is met, and half of these runs used to compute a non-negative slope.
+    for coupling in (0.1, 0.2, 0.3, 0.4):
+        F = np.array([[0.97, coupling], [0.0, 0.97]])
+        problem = FixedGainProblem(2 * F, np.eye(2), 0.5 * np.eye(2), 2 * np.eye(2), 2 * np.eye(2))
+        reference = global_fixed_trace(problem)
+        for start in ([0.96, 0.02, 0.02], [0.97, 0.02, 0.01], [0.98, 0.01, 0.01]):
+            adjoint = adjoint_fixed_trace(problem, np.array(start))
+            assert adjoint.evaluations < 100
+            np.testing.assert_allclose(adjoint.value, reference.value, rtol=1e-12)
+
+
+def test_adjoint_descent_check_still_raises_for_broken_invariants(monkeypatch: pytest.MonkeyPatch) -> None:
+    from steady_state_combined import research
+
+    problem = deterministic_fixed_gain_problem()
+    start = np.array([0.8, 0.1, 0.1])
+    # A negative definite weight makes every gradient entry positive: a genuine ascent direction.
+    with pytest.raises(RuntimeError, match="descent check"):
+        adjoint_fixed_trace(problem, start, weight=-np.eye(problem.n))
+    evaluate = research.fixed_trace_value_gradient
+    monkeypatch.setattr(
+        research, "fixed_trace_value_gradient", lambda *args: (*evaluate(*args)[:2], np.full(3, np.nan))
+    )
+    with pytest.raises(RuntimeError, match="descent check"):
+        adjoint_fixed_trace(problem, start)
+
+
 def test_validation_cli_writes_complete_hashed_artifacts(tmp_path: Path) -> None:
     script = Path(__file__).resolve().parents[1] / "examples/run_paper_validation.py"
     subprocess.run(

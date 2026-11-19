@@ -39,7 +39,9 @@ def verify_combined_risk_certificate(certificate):
     bounded = {"A": record["A"], "H": record["H"], "Q": record["Q_bounded"], "R": record["R_bounded"]}
     candidate = certificate["bounded_candidate"]
     precision = int(certificate["precision"])
-    verify_invariant_candidate(bounded, candidate, precision)
+    trace_bound = verify_invariant_candidate(bounded, candidate, precision)
+    if "upper" not in candidate or trace_bound != rational(candidate["upper"]):
+        raise ValueError("bounded trace bound is inconsistent")
     with ctx.workprec(precision):
         A, H = decode_matrix(record["A"]), decode_matrix(record["H"])
         K = decode_matrix(candidate["K"])
