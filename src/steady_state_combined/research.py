@@ -283,7 +283,8 @@ def global_fixed_trace(problem: FixedGainProblem, weight: np.ndarray | None = No
     brackets = []
     for side in ("lower", "upper"):
         for exponent in range(25):
-            margin = 0.1 * 0.5**exponent * (1.0 - rho2)
+            # Search outward from the midpoint before approaching singular limits.
+            margin = 0.5 ** (exponent + 1) * (1.0 - rho2)
             endpoint = rho2 + margin if side == "lower" else 1.0 - margin
             slope = derivative(endpoint)
             if (side == "lower" and slope < 0) or (side == "upper" and slope > 0):
@@ -317,7 +318,12 @@ def adjoint_fixed_trace(
         target /= target.sum()
         direction = target - alpha
         slope = float(gradient @ direction)
-        if slope >= 0:
+        if not slope < 0:
+            # With a negative gradient, slope <= (alpha.sum() - 1) * G exactly, G = -gradient @ alpha (Cauchy-Schwarz),
+            # and rounding adds at most 9 eps * G: such a slope means optimal to working precision, not a failure.
+            roundoff = (alpha.sum() - 1.0 + 9 * np.finfo(float).eps) * -float(gradient @ alpha)
+            if contributions.min() > np.finfo(float).tiny and slope <= roundoff:
+                break
             raise RuntimeError("adjoint direction failed descent check")
         for halving in range(45):
             step = 2.0 ** (-halving)

@@ -1,3 +1,2 @@
-numpy>=1.23
-matplotlib>=3.7
-pytest>=7
+# Development environment with every optional extra; the dependency lists live in pyproject.toml.
+-e .[dev,plot,research,certification,reference]

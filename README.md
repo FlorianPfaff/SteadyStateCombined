@@ -33,10 +33,19 @@ From a fresh checkout:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .[dev,plot]
+python -m pip install -e '.[dev,plot]'
 ```
 
 For the minimal evaluation, only NumPy is required. Matplotlib is optional and only needed for PNG figures.
+
+The later studies need optional extras:
+
+- `research`: SciPy, for the continuous solvers and the matched-accuracy validation;
+- `certification`: SciPy and python-flint, for verified trace certificates and their replay;
+- `reference`: CVXPY and Clarabel, for the independent SDP cross-check;
+- `plot`: Matplotlib, and `dev`: pytest and Ruff.
+
+`python -m pip install -r requirements.txt` installs the package with all of them.
 
 ## Authoritative matched-accuracy paper validation
 
@@ -213,6 +222,91 @@ The exporter copies CSV files into `../2026-07-SteadyStateCombined-Paper/results
 
 ## Tests
 
+The expanded research modules add greedy-optimality diagnostics, verified
+joint gain/weight trace certificates, and local combined worst-case MSE
+optimization. The expanded manuscript and frozen evaluation archives live
+in the separate paper repository.
+The original conference evaluation remains available above.
+
+Install the additional verification and independent SDP backends with:
+
+```bash
+python -m pip install -e '.[dev,plot,research,certification,reference]'
+```
+
+The certified evaluation reuses the exact archived plants in the paper
+repository. It retains all selected cases, checkpoints each search, and
+independently replays every returned certificate:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python examples/run_certified_evaluation.py \
+  --validation-dir ../2026-07-SteadyStateCombined-Paper/results/validation \
+  --out results_certified --workers 16
+python -m steady_state_combined.verify_certificate results_certified/certificates/case_0.json.gz
+```
+
+The default target is a verified relative gap of 0.001, with 100,000
+subdivisions or 1,800 seconds per plant. A budget-limited run keeps its
+verified bounds without claiming that the target was reached. Certificates
+bound the infimum on the open simplex and use the exact stored binary input
+matrices. They do not certify physical-model uncertainty or boundary
+attainment. The combined MSE optimizer remains local; its smoothing error
+and stationarity diagnostics are distinct from global trace certificates.
+
+Run the paired mechanism study and original-archive diagnostics with:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python examples/run_greedy_mechanisms.py \
+  --validation-dir ../2026-07-SteadyStateCombined-Paper/results/validation \
+  --out results_mechanisms --workers 16
+```
+
+The expanded study also uses a matched one-step spectral-risk SDP, a local
+two-adjoint combined-MSE solver, and paired controlled tracking:
+
+```bash
+python -m pip install -e '.[dev,plot,research,certification,reference]'
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+python examples/run_combined_mse_evaluation.py \
+  --validation-dir ../2026-07-SteadyStateCombined-Paper/results/validation \
+  --out results_combined_mse --workers 12
+python examples/run_controlled_tracking.py \
+  --combined-dir results_combined_mse --out results_tracking --workers 8
+python examples/run_combined_sensitivity.py \
+  --combined-dir results_combined_mse --out results_sensitivity --workers 12
+python examples/run_sdp_crosscheck.py \
+  --validation-dir ../2026-07-SteadyStateCombined-Paper/results/validation \
+  --out results_sdp --workers 12
+python examples/verify_expanded_archive.py \
+  results_combined_mse/combined_mse_manifest.json --workers 8
+```
+
+`verify_expanded_archive.py` also accepts a certification or tracking
+manifest. It verifies every recorded output hash and replays each included
+certificate, without invoking the optimizer. The paper archive contains
+frozen source bundles for the recorded runs, since development continued
+between experiments.
+
+Both verification commands judge the gap themselves rather than trusting
+the tolerance stored in a certificate: they exit with status 3 when the
+bounds are valid but do not prove the relative gap given with `--rtol`
+(default 0.001). The archive check also requires every table row that cites
+a certificate hash to agree with a replayed certificate.
+
+The recorded expansion certifies all 452 archived trace designs within a
+0.1% global gap. The combined study has 119 successful matched comparisons
+and seven retained greedy-baseline convergence failures; its median
+risk-bound reduction among those 119 cases is 17.79%. Only 25 combined
+designs meet the smooth stationarity tolerance. The remaining outputs are
+feasible improvements with explicit stagnation or iteration-limit status,
+not certified combined optima. Tracking uses deterministic bias sequences
+independent of Gaussian noise, with trajectory-level paired confidence
+intervals. It never treats Gaussian total error as deterministically bounded.
+
+The SDP cross-check uses the DARE shape only as a coordinate preconditioner
+and preserves the physical trace objective. Its independent formulation
+is an implementation check, not a theorem or an interval certificate.
+
 ```bash
 pytest
 ```
@@ -235,20 +329,37 @@ make paper-artifacts
 
 ```text
 src/steady_state_combined/
-  ellipsoidal.py        fixed-gain ellipsoidal recursions, optimization, adjoint rule
-  riccati.py            gain-reoptimized fixed-alpha Riccati sweeps
-  combined.py           fixed-gain combined stochastic/set-membership helpers
-  combined_pareto.py    deterministic combined Pareto grid search
-  examples.py           deterministic and random benchmark systems
-  research.py           optional SciPy continuous solvers and independent validation
+  ellipsoidal.py          fixed-gain ellipsoidal recursions, optimization, adjoint rule
+  riccati.py              gain-reoptimized fixed-alpha Riccati sweeps
+  combined.py             fixed-gain combined stochastic/set-membership helpers
+  combined_pareto.py      deterministic combined Pareto grid search
+  examples.py             deterministic and random benchmark systems
+  research.py             optional SciPy continuous solvers and independent validation
+  diagnostics.py          greedy-optimality diagnostics for fixed-gain weight design
+  combined_mse.py         local combined worst-case MSE design with two Lyapunov adjoints
+  sdp_reference.py        optional independent SDP references
+  tracking_validation.py  controlled tracking validation with bounded disturbances
+  verified.py             verified-arithmetic kernels with exact rational serialization
+  verified_riccati.py     verified Riccati subsolution lower bounds
+  certification.py        verified branch-and-bound trace certificates
+  verify_certificate.py   independent replay of trace certificates
+  verified_combined.py    verified feasible combined-risk bounds
 examples/
   run_fixed_gain_evaluation.py
   run_gain_optimized_evaluation.py
   run_combined_pareto.py
   run_paper_validation.py
   run_solver_ablation.py
+  run_greedy_mechanisms.py
+  run_certified_evaluation.py
+  run_combined_mse_evaluation.py
+  run_combined_sensitivity.py
+  run_controlled_tracking.py
+  run_sdp_crosscheck.py
+  verify_expanded_archive.py
 scripts/
   analyze_results.py
   export_results_to_paper.py
   generate_latex_tables.py
+tests/                    pytest suite; certification and SDP tests are skipped without their extras
 ```
