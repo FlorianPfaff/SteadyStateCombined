@@ -7,6 +7,7 @@ from fractions import Fraction
 import gzip
 import json
 from pathlib import Path
+import sys
 
 from flint import ctx
 
@@ -54,7 +55,16 @@ def _regions(leaves):
         stack.append((prefix + "0", (triangle[i], middle, triangle[k]), node["0"]))
 
 
-def verify_trace_certificate(certificate: dict, max_precision: int = 2048) -> dict:
+def verify_trace_certificate(certificate: dict, max_precision: int = 2048, required_rtol=None) -> dict:
+    """Replay every bound; raise unless all of them are verified (``ValueError`` for a wrong or unproven claim).
+
+    ``gap_achieved`` only compares the verified bounds with the certificate's own ``rtol``/``atol``, which
+    whoever wrote the file chose. To assert a gap, pass ``required_rtol`` (taken exactly, see ``rational``)
+    and read ``target_met``: upper - lower <= required_rtol * lower. A certificate short of it stays valid.
+    """
+    required = None if required_rtol is None else rational(required_rtol)
+    if required is not None and required <= 0:
+        raise ValueError("the required relative tolerance must be positive")
     if certificate["schema"] != "steady_state_combined.trace_certificate.v1":
         raise ValueError("unsupported certificate schema")
     if certificate["domain"] != "open_simplex_infimum":
@@ -65,6 +75,8 @@ def verify_trace_certificate(certificate: dict, max_precision: int = 2048) -> di
     validate_problem(record, int(certificate["problem_precision"]))
     if certificate["incumbent"] is None:
         raise ValueError("no verified feasible incumbent")
+    if certificate["status"] not in ("certified_gap", "budget_limit", "running"):
+        raise ValueError("unsupported certificate status")
     incumbent = certificate["incumbent"]
     upper = verify_invariant_candidate(record, incumbent, int(incumbent["precision"]))
     if rational(incumbent["upper"]) != upper or rational(certificate["upper"]) != upper:
@@ -72,6 +84,8 @@ def verify_trace_certificate(certificate: dict, max_precision: int = 2048) -> di
     leaves = certificate["leaves"]
     if not leaves:
         raise ValueError("empty certificate cover")
+    if certificate.get("subdivisions") != len(leaves) - 1:
+        raise ValueError("subdivision count does not match the cover")
     by_path = {item["path"]: item for item in leaves}
     checked = 0
     for path, weights in _regions(leaves):
@@ -130,17 +144,27 @@ def verify_trace_certificate(certificate: dict, max_precision: int = 2048) -> di
     achieved = upper - lower <= atol + rtol * lower
     if certificate["status"] == "certified_gap" and not achieved:
         raise ValueError("claimed gap is not achieved")
-    return {"valid": True, "gap_achieved": achieved, "leaves_verified": checked, "lower": str(lower), "upper": str(upper)}
+    result = {"valid": True, "gap_achieved": achieved, "leaves_verified": checked, "lower": str(lower),
+              "upper": str(upper), "relative_gap": str((upper - lower) / lower) if lower else None}
+    if required is not None:
+        result.update(required_rtol=str(required), target_met=upper - lower <= required * lower)
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("certificate", type=Path)
+    parser.add_argument("--rtol", type=Fraction, default=Fraction(1, 1000),
+                        help="required verified relative gap, read as an exact rational (default: the paper's 0.001)")
     args = parser.parse_args()
     opener = gzip.open if args.certificate.suffix == ".gz" else open
     with opener(args.certificate, "rt") as stream:
         certificate = json.load(stream)
-    print(json.dumps(verify_trace_certificate(certificate), indent=2))
+    result = verify_trace_certificate(certificate, required_rtol=args.rtol)
+    print(json.dumps(result, indent=2))
+    if not result["target_met"]:
+        print(f"valid bounds, but they do not prove a relative gap of {args.rtol}", file=sys.stderr)
+        sys.exit(3)  # an invalid certificate raises instead (status 1); 2 is an argparse usage error
 
 
 if __name__ == "__main__":

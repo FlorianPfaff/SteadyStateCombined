@@ -37,7 +37,10 @@ def evaluate(task):
         result = certify_steady_trace(problem, alpha, checkpoint_path=checkpoint, **options)
         certificate = result.certificate
         if certificate["incumbent"] is not None:
-            verified = verify_trace_certificate(certificate)
+            # The replay decides the requested gap itself instead of trusting the tolerances in the certificate.
+            verified = verify_trace_certificate(certificate, required_rtol=options["rtol"])
+            if result.status == "certified_gap" and not verified["target_met"]:
+                raise RuntimeError("the replay does not prove the requested relative gap")
         else:
             verified = {"valid": False, "gap_achieved": False}
         destination = Path(output) / "certificates" / f"case_{index}.json.gz"

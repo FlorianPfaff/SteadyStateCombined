@@ -1,5 +1,12 @@
 from copy import deepcopy
+import csv
 from fractions import Fraction
+import gzip
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -11,6 +18,7 @@ from flint import arb, arb_mat, ctx, fmpq_mat
 
 from steady_state_combined.certification import (
     ROOT,
+    CertifiedTraceResult,
     _reaching_horizon,
     certify_steady_trace,
     raw_dare,
@@ -31,7 +39,7 @@ from steady_state_combined.verified import (
     validate_problem,
     verify_invariant_candidate,
 )
-from steady_state_combined.verify_certificate import verify_trace_certificate
+from steady_state_combined.verify_certificate import main as replay_main, verify_trace_certificate
 from steady_state_combined.verified_riccati import verified_riccati_lower
 
 
@@ -265,3 +273,135 @@ def test_long_horizon_bounds_are_recorded_only_in_a_form_the_replay_accepts(monk
     assert rational(leaf["lower"]) <= endpoint(replayed)
     # Out of time, nothing is recorded rather than something unchecked.
     assert certification._replayable_bound(record, "", weights, iterations, 1.0, 128, 1024, 0.0) is None
+
+
+PAPER_TARGET = Fraction(1, 1000)
+
+
+def budget_limited_certificate():
+    result = certify_steady_trace(scalar_problem(), [0.1, 0.8, 0.1], rtol=1e-3, max_nodes=4)
+    assert result.status == "budget_limit" and 0.2 < result.relative_gap < 0.3
+    return result.certificate
+
+
+def test_required_gap_is_decided_by_the_replay_not_by_the_certificate_labels(tmp_path):
+    genuine = certify_steady_trace(scalar_problem(), [1e-8, 1 - 2e-8, 1e-8], rtol=1e-3, max_nodes=300).certificate
+    report = verify_trace_certificate(genuine, required_rtol=PAPER_TARGET)
+    assert report["valid"] and report["gap_achieved"] and report["target_met"] and report["required_rtol"] == "1/1000"
+    lower, upper = Fraction(report["lower"]), Fraction(report["upper"])
+    assert Fraction(report["relative_gap"]) == (upper - lower) / lower <= PAPER_TARGET
+    assert not verify_trace_certificate(genuine, required_rtol=(upper - lower) / lower / 2)["target_met"]
+    limited = budget_limited_certificate()
+    report = verify_trace_certificate(limited, required_rtol=PAPER_TARGET)
+    assert report["valid"] and not report["gap_achieved"] and not report["target_met"]
+    assert Fraction(report["relative_gap"]) > PAPER_TARGET
+    assert "target_met" not in verify_trace_certificate(limited)
+    # Relabelling by hand, or by resuming the checkpoint with a loose tolerance, satisfies only the certificate itself.
+    checkpoint = tmp_path / "checkpoint.json"
+    certify_steady_trace(scalar_problem(), [0.1, 0.8, 0.1], rtol=1e-3, max_nodes=4, checkpoint_path=checkpoint)
+    resumed = certify_steady_trace(scalar_problem(), rtol=1000.0, max_nodes=0, checkpoint_path=checkpoint)
+    assert resumed.status == "certified_gap" and resumed.certificate["leaves"] == limited["leaves"]
+    for relabelled in (dict(limited, status="certified_gap", rtol="1000"),
+                       dict(limited, status="certified_gap", atol="1000"), resumed.certificate):
+        assert verify_trace_certificate(relabelled)["gap_achieved"]
+        report = verify_trace_certificate(relabelled, required_rtol=PAPER_TARGET)
+        assert report["valid"] and not report["target_met"]
+        assert verify_trace_certificate(relabelled, required_rtol=0.3)["target_met"]
+    unbounded = verify_trace_certificate(
+        certify_steady_trace(scalar_problem(), [0.1, 0.8, 0.1], max_nodes=0).certificate, required_rtol=1000)
+    assert unbounded["valid"] and unbounded["relative_gap"] is None and not unbounded["target_met"]
+    with pytest.raises(ValueError, match="positive"):
+        verify_trace_certificate(genuine, required_rtol=0)
+
+
+def test_replay_rejects_unknown_status_and_forged_subdivision_count():
+    certificate = budget_limited_certificate()
+    assert verify_trace_certificate(dict(certificate, status="running"))["valid"]
+    for status in ("certified", "CERTIFIED_GAP", "no_feasible_incumbent", None):
+        with pytest.raises(ValueError, match="status"):
+            verify_trace_certificate(dict(certificate, status=status))
+    with pytest.raises(ValueError, match="subdivision"):
+        verify_trace_certificate(dict(certificate, subdivisions=0))
+    with pytest.raises(ValueError, match="subdivision"):
+        verify_trace_certificate({key: value for key, value in certificate.items() if key != "subdivisions"})
+
+
+def test_certificate_cli_separates_short_of_target_from_invalid(tmp_path, monkeypatch, capsys):
+    relabelled = dict(budget_limited_certificate(), status="certified_gap", rtol="1000")
+    path = tmp_path / "certificate.json"
+    path.write_text(json.dumps(relabelled))
+    monkeypatch.setattr(sys, "argv", ["verify_certificate", str(path)])
+    with pytest.raises(SystemExit) as stopped:
+        replay_main()
+    assert stopped.value.code == 3
+    report = json.loads(capsys.readouterr().out)
+    assert report["valid"] and report["required_rtol"] == "1/1000" and not report["target_met"]
+    monkeypatch.setattr(sys, "argv", ["verify_certificate", str(path), "--rtol", "0.3"])
+    replay_main()
+    assert json.loads(capsys.readouterr().out)["target_met"]
+    path.write_text(json.dumps(dict(relabelled, upper="0")))
+    with pytest.raises(ValueError, match="upper bound"):
+        replay_main()
+
+
+def write_archive(folder, certificates):
+    """Lay out certificates, their case table and the manifest like run_certified_evaluation.py does."""
+    (folder / "certificates").mkdir(parents=True)
+    rows = []
+    for index, certificate in enumerate(certificates):
+        path = folder / "certificates" / f"case_{index}.json.gz"
+        path.write_bytes(gzip.compress(json.dumps(certificate, sort_keys=True).encode(), mtime=0))
+        result = CertifiedTraceResult(certificate)
+        rows.append(dict(case=index, status=result.status, lower=result.lower_bound, upper=result.upper_bound,
+                         relative_gap=result.relative_gap, subdivisions=certificate["subdivisions"],
+                         problem_sha256=certificate["problem_sha256"],
+                         certificate_sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+    with (folder / "certification_cases.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    return write_manifest(folder, [f"certificates/case_{index}.json.gz" for index in range(len(rows))])
+
+
+def write_manifest(folder, certificates):
+    outputs = {name: hashlib.sha256((folder / name).read_bytes()).hexdigest()
+               for name in [*certificates, "certification_cases.csv"]}
+    manifest = folder / "certification_manifest.json"
+    manifest.write_text(json.dumps({"sources_changed_during_run": False, "outputs_sha256": outputs}))
+    return manifest
+
+
+def run_archive_verifier(manifest, *arguments):
+    script = Path(__file__).resolve().parents[1] / "examples" / "verify_expanded_archive.py"
+    done = subprocess.run([sys.executable, str(script), str(manifest), "--workers", "1", *arguments],
+                          capture_output=True, text=True)
+    lines = [json.loads(line) for line in done.stdout.splitlines()]
+    return done.returncode, lines, done.stderr
+
+
+def test_archive_verifier_enforces_the_target_and_replays_every_cited_certificate(tmp_path):
+    genuine = certify_steady_trace(scalar_problem(), [1e-8, 1 - 2e-8, 1e-8], rtol=1e-3, max_nodes=300).certificate
+    relabelled = dict(budget_limited_certificate(), status="certified_gap", rtol="1000")
+    code, lines, _ = run_archive_verifier(write_archive(tmp_path / "genuine", [genuine]))
+    assert code == 0 and lines[-1]["trace_certificates"] == lines[-1]["table_rows_backed"] == 1
+    assert lines[-1]["required_rtol"] == "1/1000" and lines[-1]["short_of_target"] == []
+    # Valid bounds that are short of the target: neither a pass nor an invalid archive.
+    manifest = write_archive(tmp_path / "relabelled", [genuine, relabelled])
+    code, lines, error = run_archive_verifier(manifest)
+    assert code == 3 and "do not prove a relative gap of 1/1000" in error
+    assert all(line["valid"] for line in lines[:-1]) and lines[-1]["short_of_target"] == ["case_1.json.gz"]
+    assert run_archive_verifier(manifest, "--rtol", "0.3")[0] == 0
+    # A certificate that the table cites cannot be kept out of the replay by its file name.
+    (manifest.parent / "certificates" / "case_1.json.gz").rename(manifest.parent / "certificates" / "case_1.gz")
+    code, _, error = run_archive_verifier(write_manifest(manifest.parent, ["certificates/case_0.json.gz",
+                                                                           "certificates/case_1.gz"]))
+    assert code == 1 and "case 1 is not backed by a replayed certificate" in error
+    # A table that reports something else than its certificate proves is rejected, whatever the number format.
+    manifest = write_archive(tmp_path / "edited", [genuine])
+    table = manifest.parent / "certification_cases.csv"
+    row = next(csv.DictReader(table.open(newline="")))
+    table.write_text(table.read_text().replace(row["lower"], f"{float(row['lower']):.17e}"))
+    assert run_archive_verifier(write_manifest(manifest.parent, ["certificates/case_0.json.gz"]))[0] == 0
+    table.write_text(table.read_text().replace(f"{float(row['lower']):.17e}", row["upper"]))
+    code, _, error = run_archive_verifier(write_manifest(manifest.parent, ["certificates/case_0.json.gz"]))
+    assert code == 1 and "case 0 disagrees with its certificate in ['lower']" in error

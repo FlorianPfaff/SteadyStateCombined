@@ -278,6 +278,12 @@ certificate, without invoking the optimizer. The paper archive contains
 frozen source bundles for the recorded runs, since development continued
 between experiments.
 
+Both verification commands judge the gap themselves rather than trusting
+the tolerance stored in a certificate: they exit with status 3 when the
+bounds are valid but do not prove the relative gap given with `--rtol`
+(default 0.001). The archive check also requires every table row that cites
+a certificate hash to agree with a replayed certificate.
+
 The recorded expansion certifies all 452 archived trace designs within a
 0.1% global gap. The combined study has 119 successful matched comparisons
 and seven retained greedy-baseline convergence failures; its median
