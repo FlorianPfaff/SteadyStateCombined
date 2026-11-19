@@ -14,7 +14,7 @@ in :mod:`steady_state_combined.ellipsoidal`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Iterable, Literal, Optional
 
 import numpy as np
 
@@ -103,6 +103,11 @@ def solve_fixed_alpha_riccati(
     The function returns ``None`` if the iteration diverges, the innovation
     matrix becomes singular, or the resulting closed loop fails the fixed-alpha
     stability check ``rho((I-KH)A)/sqrt(alpha_0)<1``.
+
+    The stopping test compares a step with ``tol * (1 + norm(P))`` and the bounds on ``P`` are absolute, so
+    shapes of roughly unit size are presumed. In much smaller units the test is met before the iteration has
+    converged; in much larger ones a valid shape is rejected. Scaling ``Q`` and ``R`` by ``c`` scales ``P``
+    by ``c`` and leaves the gain unchanged, so rescale such a problem before calling this.
     """
 
     alpha = _validate_alpha(alpha)
@@ -155,6 +160,87 @@ def grid_optimize_riccati(
     return best
 
 
+def refine_riccati_weights(
+    problem: GainOptimizedProblem,
+    alpha_start: np.ndarray,
+    criterion: Criterion = "trace",
+    initial_step: float = 0.02,
+    min_step: float = 1e-7,
+    max_evaluations: int = 2000,
+) -> Optional[RiccatiResult]:
+    """Refine a fixed-alpha DARE solution by simplex pattern search.
+
+    The six directions transfer mass between pairs of simplex coordinates.
+    Only improving feasible points are accepted, which makes this suitable for
+    seeding with the converged greedy baseline as well as with a grid point.
+    """
+
+    best = solve_fixed_alpha_riccati(problem, alpha_start, criterion=criterion)
+    if best is None:
+        return None
+
+    directions = np.array(
+        [
+            [1.0, -1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+            [1.0, 0.0, -1.0],
+            [-1.0, 0.0, 1.0],
+            [0.0, 1.0, -1.0],
+            [0.0, -1.0, 1.0],
+        ]
+    )
+    step = float(initial_step)
+    evaluations = 0
+    while step >= min_step and evaluations < max_evaluations:
+        candidates: list[RiccatiResult] = []
+        for direction in directions:
+            alpha = best.alpha + step * direction
+            if np.min(alpha) <= 1e-10:
+                continue
+            result = solve_fixed_alpha_riccati(problem, alpha, criterion=criterion)
+            evaluations += 1
+            if result is not None:
+                candidates.append(result)
+            if evaluations >= max_evaluations:
+                break
+
+        candidate = min(candidates, key=lambda result: result.value, default=None)
+        decrease_tol = 1e-13 * (1.0 + abs(best.value))
+        if candidate is not None and candidate.value < best.value - decrease_tol:
+            best = candidate
+        else:
+            step *= 0.5
+    return best
+
+
+def optimize_riccati_weights(
+    problem: GainOptimizedProblem,
+    resolution: int = 121,
+    criterion: Criterion = "trace",
+    initial_alphas: Iterable[np.ndarray] = (),
+) -> Optional[RiccatiResult]:
+    """Combine a simplex grid with baseline-seeded local DARE refinement."""
+
+    starts: list[np.ndarray] = []
+    grid_result = grid_optimize_riccati(problem, resolution=resolution, criterion=criterion)
+    if grid_result is not None:
+        starts.append(grid_result.alpha)
+    starts.extend(_validate_alpha(alpha) for alpha in initial_alphas)
+
+    best: Optional[RiccatiResult] = None
+    initial_step = max(1.0 / resolution, 1e-3)
+    for alpha in starts:
+        result = refine_riccati_weights(
+            problem,
+            alpha,
+            criterion=criterion,
+            initial_step=initial_step,
+        )
+        if result is not None and (best is None or result.value < best.value):
+            best = result
+    return best
+
+
 def stepwise_gain_trace_recursion(
     problem: GainOptimizedProblem,
     resolution: int = 81,
@@ -169,6 +255,8 @@ def stepwise_gain_trace_recursion(
     posterior shape obtained from ``riccati_update(problem, P_k, alpha)`` and
     selects the alpha/gain minimizing the current-step criterion. The resulting
     limiting value is the gain-reoptimized analogue of the greedy baseline.
+
+    Like ``solve_fixed_alpha_riccati``, this presumes shapes of roughly unit size; see the note there.
     """
 
     P = np.eye(problem.n) if initial_P is None else sym(initial_P)

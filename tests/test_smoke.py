@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import warnings
+from pathlib import Path
+
 import numpy as np
 
 from steady_state_combined import (
     criterion_value,
     grid_optimize_weights,
     line_search_to_nonmyopic,
+    nonmyopic_weights,
+    optimize_fixed_gain_weights,
     solve_fixed_gain_steady_state,
     stepwise_trace_steady_state,
 )
@@ -23,6 +28,16 @@ def test_deterministic_example_improves_trace() -> None:
     assert criterion_value(P_opt, "trace") < criterion_value(P_step, "trace")
 
 
+def test_refined_optimization_is_not_worse_than_baseline() -> None:
+    problem = deterministic_fixed_gain_problem()
+    step = stepwise_trace_steady_state(problem)
+    assert step is not None
+    alpha_step, P_step = step
+    result = optimize_fixed_gain_weights(problem, resolution=31, initial_alphas=[alpha_step])
+    assert result is not None
+    assert result[2] <= criterion_value(P_step, "trace") + 1e-10
+
+
 def test_line_search_has_improving_step() -> None:
     problem = deterministic_fixed_gain_problem()
     step = stepwise_trace_steady_state(problem)
@@ -32,9 +47,36 @@ def test_line_search_has_improving_step() -> None:
     assert any(row["improved"] for row in rows)
 
 
+def test_adjoint_gradient_matches_finite_difference() -> None:
+    problem = deterministic_fixed_gain_problem()
+    step = stepwise_trace_steady_state(problem)
+    assert step is not None
+    alpha, P = step
+    _, _, _, contributions = nonmyopic_weights(problem, alpha, P)
+    gradient = -contributions / alpha**2
+
+    direction = np.array([0.4, -0.3, -0.1])
+    h = 1e-6
+    P_plus = solve_fixed_gain_steady_state(problem, alpha + h * direction)
+    P_minus = solve_fixed_gain_steady_state(problem, alpha - h * direction)
+    assert P_plus is not None and P_minus is not None
+    finite_difference = (np.trace(P_plus) - np.trace(P_minus)) / (2.0 * h)
+    assert np.isclose(finite_difference, gradient @ direction, rtol=2e-6, atol=1e-8)
+
+
 def test_fixed_alpha_solution_is_positive_semidefinite() -> None:
     problem = deterministic_fixed_gain_problem()
     alpha = np.array([0.7, 0.2, 0.1])
     P = solve_fixed_gain_steady_state(problem, alpha)
     assert P is not None
     assert np.min(np.linalg.eigvalsh(P)) > -1e-8
+
+
+def test_every_source_file_compiles_without_warnings() -> None:
+    root = Path(__file__).resolve().parents[1]
+    paths = sorted(path for folder in ("src", "examples", "scripts", "tests") for path in (root / folder).rglob("*.py"))
+    assert len(paths) > 40
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for path in paths:
+            compile(path.read_text(encoding="utf-8"), str(path), "exec")

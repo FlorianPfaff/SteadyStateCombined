@@ -10,7 +10,8 @@ For a fixed gain K and approximation weights alpha, it solves
     P     = F P F^T / alpha_0 + G_w Q_b G_w^T / alpha_w
             + G_v R_b G_v^T / alpha_v,
 
-and evaluates lambda tr(Sigma) + (1-lambda) tr(P).
+and evaluates a dimensionless weighted sum after normalizing each trace by its
+independently attainable minimum on the finite candidate set.
 """
 
 from __future__ import annotations
@@ -183,20 +184,46 @@ def enumerate_combined_candidates_2d(
 def pareto_from_candidates(
     candidates: list[CombinedCandidate],
     lambdas: Iterable[float],
+    normalize: bool = True,
 ) -> list[CombinedParetoResult]:
-    """Choose the best candidate for each scalarization value."""
+    """Choose the best candidate for each scalarization value.
+
+    By default, each trace is divided by its independently attainable minimum.
+    This removes arbitrary unit/scale effects from the scalarization while
+    leaving the underlying Pareto ordering unchanged.
+    """
 
     if not candidates:
         return []
+    sigma_scale = min(candidate.trace_sigma for candidate in candidates) if normalize else 1.0
+    P_scale = min(candidate.trace_P for candidate in candidates) if normalize else 1.0
+    if sigma_scale <= 0.0 or P_scale <= 0.0:
+        raise ValueError("trace normalization requires strictly positive minima")
     results: list[CombinedParetoResult] = []
     for lam in lambdas:
         lam = float(lam)
         if not 0.0 <= lam <= 1.0:
             raise ValueError("lambda values must lie in [0, 1]")
-        best_candidate = min(candidates, key=lambda c: lam * c.trace_sigma + (1.0 - lam) * c.trace_P)
-        objective = lam * best_candidate.trace_sigma + (1.0 - lam) * best_candidate.trace_P
+        def scalarized(candidate: CombinedCandidate) -> float:
+            return lam * candidate.trace_sigma / sigma_scale + (1.0 - lam) * candidate.trace_P / P_scale
+
+        best_candidate = min(candidates, key=scalarized)
+        objective = scalarized(best_candidate)
         results.append(CombinedParetoResult(lambda_stochastic=lam, objective=float(objective), candidate=best_candidate))
     return results
+
+
+def nondominated_candidates(candidates: list[CombinedCandidate]) -> list[CombinedCandidate]:
+    """Return the trace-Pareto frontier of a finite candidate set."""
+
+    ordered = sorted(candidates, key=lambda candidate: (candidate.trace_sigma, candidate.trace_P))
+    frontier: list[CombinedCandidate] = []
+    best_trace_P = float("inf")
+    for candidate in ordered:
+        if not frontier or candidate.trace_P < best_trace_P - 1e-12 * (1.0 + abs(best_trace_P)):
+            frontier.append(candidate)
+            best_trace_P = candidate.trace_P
+    return frontier
 
 
 def deterministic_combined_pareto_problem() -> CombinedParetoProblem:

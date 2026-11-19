@@ -48,15 +48,19 @@ def fmt(x: float, digits: int = 4) -> str:
     return f"{x:.{digits}g}"
 
 
-def ratio_to_percent(ratio: float) -> float:
-    return 100.0 * (ratio - 1.0)
+def fmt_count(x: float) -> str:
+    return f"{int(round(x)):,}"
+
+
+def ratio_to_reduction_percent(ratio: float) -> float:
+    return 100.0 * (1.0 - 1.0 / ratio)
 
 
 def classify_improvement(median_ratio: float, max_ratio: float, fraction_improved: float) -> str:
     if median_ratio != median_ratio:
         return "insufficient data"
-    median_pct = ratio_to_percent(median_ratio)
-    max_pct = ratio_to_percent(max_ratio)
+    median_pct = ratio_to_reduction_percent(median_ratio)
+    max_pct = ratio_to_reduction_percent(max_ratio)
     if median_pct >= 5.0 and fraction_improved >= 0.6:
         return "strong broad improvement"
     if median_pct >= 1.0 and fraction_improved >= 0.5:
@@ -89,7 +93,9 @@ def summarize_random(rows: list[dict[str, str]]) -> dict[str, float]:
         "p25": as_float(row, "p25_ratio_trace"),
         "p75": as_float(row, "p75_ratio_trace"),
         "max": as_float(row, "max_ratio_trace"),
+        "min": as_float(row, "min_ratio_trace"),
         "fraction": as_float(row, "fraction_improved"),
+        "median_reduction": as_float(row, "median_trace_reduction_percent"),
     }
 
 
@@ -99,6 +105,7 @@ def combined_ranges(rows: list[dict[str, str]]) -> Optional[dict[str, float]]:
     row = rows[0]
     return {
         "candidates": as_float(row, "candidate_count"),
+        "nondominated": as_float(row, "nondominated_count"),
         "min_sigma": as_float(row, "min_trace_sigma"),
         "max_sigma": as_float(row, "max_trace_sigma"),
         "min_P": as_float(row, "min_trace_P"),
@@ -156,11 +163,12 @@ def make_report(results_root: Path) -> str:
     else:
         lines.append("- Deterministic summary not found.")
     if fixed_summary:
-        lines.append(f"- Random systems: **{fmt(fixed_summary['systems'], 0)}**.")
-        lines.append(f"- Median trace ratio: **{fmt(fixed_summary['median'])}** ({fmt(ratio_to_percent(fixed_summary['median']))}% improvement).")
+        lines.append(f"- Random systems: **{fmt_count(fixed_summary['systems'])}**.")
+        lines.append(f"- Median trace ratio: **{fmt(fixed_summary['median'])}** ({fmt(ratio_to_reduction_percent(fixed_summary['median']))}% trace reduction).")
         lines.append(f"- Mean trace ratio: **{fmt(fixed_summary['mean'])}**.")
         lines.append(f"- IQR trace ratio: **{fmt(fixed_summary['p25'])} -- {fmt(fixed_summary['p75'])}**.")
-        lines.append(f"- Max trace ratio: **{fmt(fixed_summary['max'])}** ({fmt(ratio_to_percent(fixed_summary['max']))}% improvement).")
+        lines.append(f"- Max trace ratio: **{fmt(fixed_summary['max'])}** ({fmt(ratio_to_reduction_percent(fixed_summary['max']))}% trace reduction).")
+        lines.append(f"- Minimum trace ratio: **{fmt(fixed_summary['min'], 6)}**.")
         lines.append(f"- Fraction improved: **{fmt(fixed_summary['fraction'])}**.")
         lines.append(f"- Classification: **{classify_improvement(fixed_summary['median'], fixed_summary['max'], fixed_summary['fraction'])}**.")
     else:
@@ -175,11 +183,12 @@ def make_report(results_root: Path) -> str:
     else:
         lines.append("- Deterministic Riccati summary not found.")
     if riccati_summary:
-        lines.append(f"- Random systems: **{fmt(riccati_summary['systems'], 0)}**.")
-        lines.append(f"- Median trace ratio: **{fmt(riccati_summary['median'])}** ({fmt(ratio_to_percent(riccati_summary['median']))}% improvement).")
+        lines.append(f"- Random systems: **{fmt_count(riccati_summary['systems'])}**.")
+        lines.append(f"- Median trace ratio: **{fmt(riccati_summary['median'])}** ({fmt(ratio_to_reduction_percent(riccati_summary['median']))}% trace reduction).")
         lines.append(f"- Mean trace ratio: **{fmt(riccati_summary['mean'])}**.")
         lines.append(f"- IQR trace ratio: **{fmt(riccati_summary['p25'])} -- {fmt(riccati_summary['p75'])}**.")
-        lines.append(f"- Max trace ratio: **{fmt(riccati_summary['max'])}** ({fmt(ratio_to_percent(riccati_summary['max']))}% improvement).")
+        lines.append(f"- Max trace ratio: **{fmt(riccati_summary['max'])}** ({fmt(ratio_to_reduction_percent(riccati_summary['max']))}% trace reduction).")
+        lines.append(f"- Minimum trace ratio: **{fmt(riccati_summary['min'], 6)}**.")
         lines.append(f"- Fraction improved: **{fmt(riccati_summary['fraction'])}**.")
         lines.append(f"- Classification: **{classify_improvement(riccati_summary['median'], riccati_summary['max'], riccati_summary['fraction'])}**.")
     else:
@@ -200,7 +209,8 @@ def make_report(results_root: Path) -> str:
     lines.append("## Combined stochastic/set-membership Pareto sweep")
     lines.append("")
     if combined_summary_values:
-        lines.append(f"- Feasible candidates: **{fmt(combined_summary_values['candidates'], 0)}**.")
+        lines.append(f"- Feasible candidates: **{fmt_count(combined_summary_values['candidates'])}**.")
+        lines.append(f"- Nondominated candidates: **{fmt_count(combined_summary_values['nondominated'])}**.")
         lines.append(f"- `tr(Sigma)` range: **{fmt(combined_summary_values['min_sigma'])} -- {fmt(combined_summary_values['max_sigma'])}**.")
         lines.append(f"- `tr(P)` range: **{fmt(combined_summary_values['min_P'])} -- {fmt(combined_summary_values['max_P'])}**.")
     else:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from steady_state_combined import FixedGainProblem, solve_fixed_gain_steady_state, spectral_radius
+from steady_state_combined.examples import deterministic_fixed_gain_problem
 from steady_state_combined.ellipsoidal import sym
 
 
@@ -72,6 +73,37 @@ def test_block_lmi_matches_direct_invariance_inequality() -> None:
         lmi_ok = is_psd(block_lmi_matrix(A, H, Q, R, X, Y, mu))
         direct_ok = is_psd(direct_invariance_residual(A, H, Q, R, X, Y, mu))
         assert lmi_ok == direct_ok
+
+
+def test_block_lmi_accepts_feasible_and_rejects_infeasible_shapes() -> None:
+    problem = deterministic_fixed_gain_problem()
+    mu = np.array([0.78, 0.12, 0.10])
+    P_star = solve_fixed_gain_steady_state(problem, mu)
+    assert P_star is not None
+
+    for scale, expected in ((1.4, True), (0.8, False)):
+        P = scale * P_star
+        X = np.linalg.inv(P)
+        Y = X @ problem.K
+        lmi_ok = is_psd(block_lmi_matrix(problem.A, problem.H, problem.Q, problem.R, X, Y, mu))
+        direct_ok = is_psd(direct_invariance_residual(problem.A, problem.H, problem.Q, problem.R, X, Y, mu))
+        assert lmi_ok == direct_ok == expected
+
+
+def test_nonstrict_monotone_criteria_can_have_slack_minimizers() -> None:
+    alpha = np.array([0.5, 0.25, 0.25])
+    minimum = np.diag([1.0, 0.1])
+    slack = np.diag([1.0, 0.5])
+    A, H, K = np.zeros((2, 2)), np.eye(2), np.zeros((2, 2))
+    Q, R = alpha[1] * minimum, np.eye(2)
+    for P in (minimum, slack):
+        X = np.linalg.inv(P)
+        assert is_psd(block_lmi_matrix(A, H, Q, R, X, X @ K, alpha))
+    assert np.linalg.eigvalsh(minimum)[-1] == np.linalg.eigvalsh(slack)[-1]
+    singular_weight = np.diag([1.0, 0.0])
+    assert np.trace(singular_weight @ minimum) == np.trace(singular_weight @ slack)
+    assert np.trace(minimum) < np.trace(slack)
+    assert np.linalg.slogdet(minimum)[1] < np.linalg.slogdet(slack)[1]
 
 
 def solve_scaled_dare(A: np.ndarray, H: np.ndarray, Q: np.ndarray, R: np.ndarray, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

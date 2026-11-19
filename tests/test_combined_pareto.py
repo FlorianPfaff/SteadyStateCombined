@@ -5,6 +5,7 @@ import numpy as np
 from steady_state_combined.combined_pareto import (
     deterministic_combined_pareto_problem,
     enumerate_combined_candidates_2d,
+    nondominated_candidates,
     pareto_from_candidates,
     solve_combined_fixed_gain_alpha,
 )
@@ -34,3 +35,10 @@ def test_combined_pareto_sweep_returns_one_result_per_lambda() -> None:
         assert result.objective > 0.0
         assert result.candidate.trace_sigma > 0.0
         assert result.candidate.trace_P > 0.0
+
+    frontier = nondominated_candidates(candidates)
+    assert frontier
+    assert all(
+        left.trace_sigma <= right.trace_sigma and left.trace_P > right.trace_P
+        for left, right in zip(frontier, frontier[1:])
+    )
