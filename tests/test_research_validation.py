@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import dataclasses
+from fractions import Fraction
 import hashlib
 import json
 import os
@@ -24,6 +26,7 @@ from steady_state_combined.research import (
     fixed_trace_value_gradient,
     global_fixed_trace,
     one_step_trace_value_gradient,
+    posynomial_gap_bound,
     solve_dare,
 )
 from steady_state_combined.riccati import (
@@ -76,6 +79,7 @@ def test_global_trace_reference_has_kkt_solution_and_matches_adjoint() -> None:
     assert baseline is not None
     adjoint = adjoint_fixed_trace(problem, baseline[0])
     assert reference.stationarity < 1e-8
+    assert not adjoint.stagnated
     np.testing.assert_allclose(adjoint.value, reference.value, rtol=1e-8)
     assert reference.value < np.trace(baseline[1]) * 0.7
     np.testing.assert_allclose(reference.P, solve_fixed_gain_steady_state(problem, reference.alpha), rtol=1e-10)
@@ -128,6 +132,7 @@ def test_adjoint_stops_at_roundoff_without_thousands_of_tiny_steps() -> None:
     adjoint = adjoint_fixed_trace(fixed, baseline[0])
     reference = global_fixed_trace(fixed)
     assert adjoint.evaluations < 2000
+    assert not adjoint.stagnated
     np.testing.assert_allclose(adjoint.value, reference.value, rtol=1e-8)
 
 
@@ -144,6 +149,135 @@ def test_adjoint_returns_optimum_when_descent_slope_is_rounding_noise() -> None:
             adjoint = adjoint_fixed_trace(problem, np.array(start))
             assert adjoint.evaluations < 100
             np.testing.assert_allclose(adjoint.value, reference.value, rtol=1e-12)
+            # The first-order KKT test is still unmet; the second-order bound confirms the optimum instead.
+            assert np.ptp(adjoint.gradient) / adjoint.value > 1e-6 and not adjoint.stagnated
+
+
+def test_adjoint_reports_stagnation_instead_of_a_point_far_from_the_optimum() -> None:
+    from steady_state_combined.ellipsoidal import FixedGainProblem
+
+    # The trace falls from about 16/15 to its minimum 1 when alpha_0 moves by d / 4 = 2^-52: every descent slope
+    # computed at the start is rounding noise. The solver returned the start after zero iterations as if optimal.
+    d = 2.0**-50
+    problem = FixedGainProblem(np.array([[2 * (1 - d)]]), np.ones((1, 1)), np.array([[0.5]]), np.array([[d * d]]),
+                               np.array([[d * d]]))
+
+    def exact_trace(alpha) -> Fraction:
+        # F = 1 - d and S_w = S_v = d^2 / 4 exactly, so P = (S_w / alpha_w + S_v / alpha_v) / (1 - F^2 / alpha_0).
+        a0, aw, av = map(Fraction, alpha)
+        return (Fraction(d) ** 2 / 4 * (1 / aw + 1 / av)) / (1 - (1 - Fraction(d)) ** 2 / a0)
+
+    assert exact_trace([1 - d, d / 2, d / 2]) == 1
+    start = np.array([1 - 3 * d / 4, 3 * d / 8, 3 * d / 8])
+    result = adjoint_fixed_trace(problem, start)
+    assert result.stagnated
+    assert exact_trace(result.alpha) > Fraction(106, 100)
+    assert posynomial_gap_bound(result.alpha, result.value, result.gradient) > 0.06
+    # Running out of iterations is no confirmation either.
+    fixed = deterministic_fixed_gain_problem()
+    assert adjoint_fixed_trace(fixed, np.array([0.8, 0.1, 0.1]), max_iter=2).stagnated
+    assert not adjoint_fixed_trace(fixed, np.array([0.8, 0.1, 0.1])).stagnated
+
+
+def test_adjoint_flags_points_whose_gap_hides_below_rounding() -> None:
+    from steady_state_combined.ellipsoidal import FixedGainProblem
+
+    # Points that an earlier version of the gap bound confirmed far from the minimum. A weight of 1e-140 leaves the
+    # other gradient shares below eps, so log1p(ratio - 1) was -inf, which the clamp at zero turned into a bound of 0.
+    problem = FixedGainProblem(np.ones((1, 1)), np.ones((1, 1)), np.array([[0.5]]), np.array([[4.0]]), np.array([[4.0]]))
+    result = adjoint_fixed_trace(problem, np.array([0.5, 1e-140, 0.5]))  # the minimum is 16
+    assert result.value > 1e139 and result.stagnated
+    assert posynomial_gap_bound(result.alpha, result.value, result.gradient) == 1.0
+    # With 1 - rho(F) = 1.2e-13 the trace moves by about 1e-3 between neighbouring floating-point weights, so the
+    # divergence computed from the float gradient was rounding noise; it confirmed a point 7.3e-5 above the minimum
+    # (in 256-bit arithmetic). No accuracy beyond that resolution can be confirmed.
+    A = np.array([[-0.48335732454404606, 0.12447908132549203, -0.36377500175139504],
+                  [-0.14124130610842214, -1.1274568899701494, -0.05473086343030783],
+                  [-1.9120770038082664, -0.005064448216694418, -1.5565983911362462]])
+    Q = np.array([[0.00017652286786572904, 0.0001595220730012635, -3.60548582191036e-05],
+                  [0.0001595220730012635, 0.0004348221778550011, -0.00012597746933564697],
+                  [-3.60548582191036e-05, -0.00012597746933564697, 4.77551079594547e-05]])
+    R = np.array([[0.013523601909422232, -0.011215904631709973, 0.004557314846429718],
+                  [-0.011215904631709973, 0.011170129370801907, -0.008082624261491192],
+                  [0.004557314846429718, -0.008082624261491192, 0.012061499765258922]])
+    problem = FixedGainProblem(A, np.eye(3), 0.5 * np.eye(3), Q, R)
+    result = adjoint_fixed_trace(problem, np.array([0.9999999999999231, 7.545262431120981e-14, 1.485831295313535e-15]))
+    elasticity = -float(result.gradient @ result.alpha) / result.value
+    assert elasticity * np.finfo(float).eps > 1e-6 and result.stagnated
+
+
+def test_adjoint_confirms_its_optimum_for_a_singular_semidefinite_weight() -> None:
+    # Rounding gives this rank-one weight an eigenvalue of about -1e-17; it is still a semidefinite weight.
+    problem = deterministic_fixed_gain_problem()
+    x = np.array([-0.24836162209524854, 0.4204452380655215])
+    singular = adjoint_fixed_trace(problem, np.array([0.8, 0.1, 0.1]), weight=np.outer(x, x))
+    regular = adjoint_fixed_trace(problem, np.array([0.8, 0.1, 0.1]), weight=np.outer(x, x) + 1e-15 * np.eye(2))
+    assert not singular.stagnated and not regular.stagnated
+    np.testing.assert_allclose(singular.value, regular.value, rtol=1e-12)
+
+
+def test_validation_requires_the_adjoint_and_global_values_to_agree_from_both_sides() -> None:
+    script = Path(__file__).resolve().parents[1] / "examples/run_paper_validation.py"
+    evaluate = runpy.run_path(str(script))["evaluate_case"]
+    task = (0, "deterministic", deterministic_gain_optimized_problem(), None, None)
+    accurate = evaluate(task)
+    assert accurate["status"] == "ok"
+    solve = evaluate.__globals__["adjoint_fixed_trace"]  # run_path returns a copy of the script's globals
+    rows = {}
+    for stagnated in (False, True):
+        for excess in (0.0, 2e-6):
+            def adjoint(*args, stagnated=stagnated, excess=excess):
+                result = solve(*args)
+                return dataclasses.replace(result, stagnated=stagnated, value=result.value * (1 + excess))
+
+            evaluate.__globals__["adjoint_fixed_trace"] = adjoint
+            rows[stagnated, excess] = evaluate(task)
+    # Agreement validates the plant, flag or not; a value above the global one fails it, flag or not.
+    assert rows[True, 0.0]["status"] == "ok" and rows[True, 0.0]["fixed_adjoint_trace"] == accurate["fixed_adjoint_trace"]
+    for stagnated in (False, True):
+        assert rows[stagnated, 2e-6]["status"] == "failed"
+        assert "above independently solved global reference" in rows[stagnated, 2e-6]["error"]
+
+
+def test_posynomial_gap_bound_is_an_upper_bound_of_second_order() -> None:
+    from steady_state_combined.ellipsoidal import FixedGainProblem, spectral_radius
+
+    rng = np.random.default_rng(20261119)
+    checked = 0
+    while checked < 12:
+        n, m = int(rng.integers(1, 5)), int(rng.integers(1, 3))
+        A = rng.normal(size=(n, n))
+        A *= rng.uniform(0.3, 1.5) / spectral_radius(A)
+        H, L, M = rng.normal(size=(m, n)), rng.normal(size=(n, n)), rng.normal(size=(m, m))
+        gain_problem = GainOptimizedProblem(A, H, L @ L.T, M @ M.T)
+        fixed = FixedGainProblem(A, H, solve_dare(gain_problem, rng.dirichlet(np.ones(3)))[1], L @ L.T, M @ M.T)
+        X = rng.normal(size=(n, n))
+        weight = None if checked % 2 else X @ X.T
+        try:
+            reference = global_fixed_trace(fixed, weight)
+        except (ValueError, RuntimeError):
+            continue
+        rho2 = spectral_radius(fixed.F) ** 2
+        points = []
+        for _ in range(15):
+            a0 = rho2 + (1 - rho2) * rng.uniform(0.01, 0.99)
+            alpha = np.array([a0, *(1 - a0) * rng.dirichlet(np.ones(2))])
+            points.append((alpha, *fixed_trace_value_gradient(fixed, alpha, weight)[1:]))
+        best = min(reference.value, *(value for _, value, _ in points))
+        for alpha, value, gradient in points:
+            # value * (1 - bound) bounds the minimum from below, so it may not exceed any trace that is attained.
+            assert value * (1 - posynomial_gap_bound(alpha, value, gradient)) <= best * (1 + 1e-9)
+        # Near the minimum the bound is of second order in the distance, like the gap itself.
+        bounds = []
+        for offset in (1e-2, 1e-3, 1e-4):
+            alpha = reference.alpha + offset * min(reference.alpha[1:]) * np.array([0.0, 1.0, -1.0])
+            _, value, gradient = fixed_trace_value_gradient(fixed, alpha, weight)
+            gap = (value - reference.value) / value
+            bounds.append(posynomial_gap_bound(alpha, value, gradient))
+            assert 0 < gap <= bounds[-1] <= 20 * gap
+        assert 50 < bounds[1] / bounds[2] < 200
+        checked += 1
+    assert posynomial_gap_bound(np.full(3, 1 / 3), 1.0, np.array([-1.0, -2.0, 0.5])) == np.inf
 
 
 def test_adjoint_descent_check_still_raises_for_broken_invariants(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -31,6 +31,8 @@ class ContinuousResult:
     iterations: int
     seconds: float
     alpha_floor: float = 0.0
+    # Set by adjoint_fixed_trace only: it stopped before it could confirm that value is within kkt_tol of the minimum.
+    stagnated: bool = False
 
     @property
     def stationarity(self) -> float:
@@ -298,6 +300,39 @@ def global_fixed_trace(problem: FixedGainProblem, weight: np.ndarray | None = No
     return ContinuousResult(alpha, P, problem.K, value, gradient, evaluations, evaluations, perf_counter() - started)
 
 
+def posynomial_gap_bound(alpha: np.ndarray, value: float, gradient: np.ndarray) -> float:
+    """Bound on (value - minimum) / value over the simplex for a fixed-gain trace with semidefinite W, Q and R.
+
+    Such a trace is a posynomial in the weights, the sum over k of tr(W F^k S_w F^kT) / (alpha_0^k alpha_w) and
+    tr(W F^k S_v F^kT) / (alpha_0^k alpha_v), so in log coordinates it lies above its tangent, the monomial
+    value * prod (alpha_i / beta_i)^e_i with e_i = -alpha_i gradient_i / value. The minimum of that monomial on the
+    simplex gives the bound 1 - exp(-E KL(p || alpha)), where E = sum(e) and p = e / E. Unlike the linearization
+    gap it is of second order in the distance to the optimum, so it can confirm a minimum that rounding hides from
+    a descent test. The divergence carries an allowance of 4 eps for its own rounding, so the bound never drops
+    below about E eps, the relative change of the trace between neighbouring floating-point weights. The result is
+    inf when the gradient does not have the signs of such a trace.
+    """
+    alpha = np.asarray(alpha, dtype=float) / np.sum(alpha)
+    gradient = np.asarray(gradient, dtype=float)
+    mean = float(gradient @ alpha)
+    if not (np.isfinite(value) and value > 0 and mean < 0 and np.all(gradient <= 0)):
+        return float("inf")
+    ratio = gradient / mean  # p / alpha, kept apart: 1 + (ratio - 1) loses ratios below eps
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        divergence = float(np.sum(np.where(ratio > 0, alpha * ratio * np.log(ratio), 0.0)))
+    if not np.isfinite(divergence):
+        return float("inf")
+    return float(-np.expm1(mean / value * (max(divergence, 0.0) + 4 * np.finfo(float).eps)))
+
+
+def _semidefinite(weight: np.ndarray | None) -> bool:
+    """Whether a trace weight is positive semidefinite up to the rounding of its eigenvalues."""
+    if weight is None:
+        return True
+    eigenvalues = np.linalg.eigvalsh(sym(np.asarray(weight, dtype=float)))
+    return bool(eigenvalues[0] >= -8 * len(eigenvalues) * np.finfo(float).eps * np.max(np.abs(eigenvalues)))
+
+
 def adjoint_fixed_trace(
     problem: FixedGainProblem,
     alpha_start: np.ndarray,
@@ -305,6 +340,16 @@ def adjoint_fixed_trace(
     max_iter: int = 1000,
     kkt_tol: float = 1e-6,
 ) -> ContinuousResult:
+    """Minimize the weighted fixed-gain trace over the simplex by adjoint fixed-point directions and Armijo steps.
+
+    The iteration stops when the relative KKT residual ptp(gradient) / value is at most ``kkt_tol``, which bounds
+    the relative suboptimality of the convex trace by ``kkt_tol``. Rounding can stop it before: the computed
+    descent slope loses its sign, no step passes the line search, or a step gains no more than rounding. The point
+    reached then is reported as converged only if :func:`posynomial_gap_bound` confirms the same accuracy.
+    Otherwise, and when ``max_iter`` runs out, the result has ``stagnated=True``: its value may be far from the
+    minimum, for instance where the trace changes by a few percent within the last bits of the weights. So does a
+    result whose trace moves by more than ``kkt_tol`` between neighbouring floating-point weights, KKT test or not.
+    """
     started = perf_counter()
     alpha = normalize_alpha(alpha_start)
     P, value, gradient = fixed_trace_value_gradient(problem, alpha, weight)
@@ -320,7 +365,8 @@ def adjoint_fixed_trace(
         slope = float(gradient @ direction)
         if not slope < 0:
             # With a negative gradient, slope <= (alpha.sum() - 1) * G exactly, G = -gradient @ alpha (Cauchy-Schwarz),
-            # and rounding adds at most 9 eps * G: such a slope means optimal to working precision, not a failure.
+            # and rounding adds at most 9 eps * G. Such a slope only says that rounding hides any further descent;
+            # whether the point is optimal is decided after the loop.
             roundoff = (alpha.sum() - 1.0 + 9 * np.finfo(float).eps) * -float(gradient @ alpha)
             if contributions.min() > np.finfo(float).tiny and slope <= roundoff:
                 break
@@ -344,4 +390,13 @@ def adjoint_fixed_trace(
             break
         if roundoff_stagnation:
             break
-    return ContinuousResult(alpha, P, problem.K, value, gradient, evaluations, iteration, perf_counter() - started)
+    # E = -gradient @ alpha / value is the sum of the elasticities of the trace in the weights, so neighbouring
+    # floating-point weights differ by about E eps in trace: no result is confirmed beyond that resolution.
+    elasticity = -float(gradient @ (alpha / alpha.sum())) / value if value > 0 else 0.0
+    confirmed = (np.ptp(gradient) / max(abs(value), np.finfo(float).tiny) <= kkt_tol
+                 and elasticity * 4 * np.finfo(float).eps <= kkt_tol)
+    if not confirmed and _semidefinite(weight):
+        confirmed = posynomial_gap_bound(alpha, value, gradient) <= kkt_tol
+    return ContinuousResult(
+        alpha, P, problem.K, value, gradient, evaluations, iteration, perf_counter() - started, stagnated=not confirmed
+    )

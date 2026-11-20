@@ -68,7 +68,7 @@ The primary archive has 452 cases: one deterministic plant, 300 historical two-s
 The research module provides:
 
 - globally solved fixed-gain weighted trace via convex scalar reduction;
-- adjoint-only feasible Armijo iteration, with roundoff-level stagnation detection;
+- adjoint-only feasible Armijo iteration, with roundoff-level stagnation detection; a stop short of the KKT tolerance counts as converged only if a second-order optimality-gap bound confirms it, and is otherwise marked `stagnated`; the validation fails a plant whose adjoint value lies more than 1e-6 above the global scalar solution or 1e-7 below it;
 - independent SciPy DARE/Lyapunov solutions and residual checks;
 - analytic one-step and DARE envelope gradients;
 - continuous greedy and steady-state searches with matched tolerances and positivity floors.
