@@ -1,3 +1,4 @@
+from collections import Counter
 from copy import deepcopy
 import csv
 from fractions import Fraction
@@ -26,8 +27,11 @@ from steady_state_combined.certification import (
     split_triangle,
     upper_corner,
 )
+from steady_state_combined.combined_mse import combined_mse_value_gradient
+from steady_state_combined.combined_pareto import CombinedParetoProblem
 from steady_state_combined.research import continuous_steady_trace, solve_dare
 from steady_state_combined.riccati import GainOptimizedProblem, deterministic_gain_optimized_problem
+from steady_state_combined.verified_combined import certify_combined_risk
 from steady_state_combined.verified import (
     ball,
     decode_matrix,
@@ -353,6 +357,30 @@ def test_replay_rejects_unknown_status_and_forged_subdivision_count():
         verify_trace_certificate({key: value for key, value in certificate.items() if key != "subdivisions"})
 
 
+def test_a_failed_start_does_not_block_a_retry_from_new_weights(tmp_path):
+    # The default initialization finds no feasible design for this plant, and the checkpoint records just that. A
+    # retry from feasible weights used to replay that checkpoint first and fail: "no verified feasible incumbent".
+    problem, checkpoint = slow_unobservable_problem(), tmp_path / "checkpoint.json"
+    assert certify_steady_trace(problem, checkpoint_path=checkpoint).status == "no_feasible_incumbent"
+    assert certify_steady_trace(problem, checkpoint_path=checkpoint).status == "no_feasible_incumbent"
+    alpha = [0.99, 0.0099, 0.0001]
+    retried = certify_steady_trace(problem, alpha, max_nodes=2000, checkpoint_path=checkpoint)
+    fresh = certify_steady_trace(problem, alpha, max_nodes=2000)
+    assert retried.status == "certified_gap"
+    assert dict(retried.certificate, seconds=0) == dict(fresh.certificate, seconds=0)
+    assert verify_trace_certificate(retried.certificate, required_rtol=PAPER_TARGET)["target_met"]
+    assert certify_steady_trace(problem, max_nodes=0, checkpoint_path=checkpoint).status == "certified_gap"
+    # Every other checkpoint is still replayed before it is used: one without an incumbent is not a failed start
+    # unless it says so, and a failed start of another plant is no checkpoint of this one.
+    checkpoint.write_text(json.dumps(dict(json.loads(checkpoint.read_text()), incumbent=None)))
+    with pytest.raises(ValueError, match="incumbent"):
+        certify_steady_trace(problem, alpha, checkpoint_path=checkpoint)
+    other = GainOptimizedProblem(problem.A, problem.H, 2 * problem.Q, problem.R)
+    assert certify_steady_trace(other, checkpoint_path=checkpoint, resume=False).status == "no_feasible_incumbent"
+    with pytest.raises(ValueError, match="another problem"):
+        certify_steady_trace(problem, alpha, checkpoint_path=checkpoint)
+
+
 def test_certificate_cli_separates_short_of_target_from_invalid(tmp_path, monkeypatch, capsys):
     relabelled = dict(budget_limited_certificate(), status="certified_gap", rtol="1000")
     path = tmp_path / "certificate.json"
@@ -371,30 +399,106 @@ def test_certificate_cli_separates_short_of_target_from_invalid(tmp_path, monkey
         replay_main()
 
 
-def write_archive(folder, certificates):
-    """Lay out certificates, their case table and the manifest like run_certified_evaluation.py does."""
-    (folder / "certificates").mkdir(parents=True)
-    rows = []
-    for index, certificate in enumerate(certificates):
-        path = folder / "certificates" / f"case_{index}.json.gz"
-        path.write_bytes(gzip.compress(json.dumps(certificate, sort_keys=True).encode(), mtime=0))
-        result = CertifiedTraceResult(certificate)
-        rows.append(dict(case=index, status=result.status, lower=result.lower_bound, upper=result.upper_bound,
-                         relative_gap=result.relative_gap, subdivisions=certificate["subdivisions"],
-                         problem_sha256=certificate["problem_sha256"],
-                         certificate_sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
-    with (folder / "certification_cases.csv").open("w", newline="") as stream:
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write_table(path, rows):
+    with path.open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_validation(folder, systems, cases):
+    """Validation inputs as run_paper_validation.py writes them: the plants by case ID, and the case table."""
+    folder.mkdir(parents=True)
+    np.savez_compressed(folder / "systems.npz", **systems)
+    write_table(folder / "validation_cases.csv", cases)
+
+
+def write_archive(folder, certificates):
+    """Lay out validation inputs, certificates, their case table and the manifest like run_certified_evaluation.py."""
+    (folder / "certificates").mkdir(parents=True)
+    systems, cases, rows = {}, [], []
+    for index, certificate in enumerate(certificates):
+        record = certificate["problem"]
+        for key in ("A", "H", "Q", "R"):
+            systems[f"case_{index}_{key}"] = np.array([[float(Fraction(x)) for x in row] for row in record[key]])
+        cases.append(dict(case=index, group="scalar", dimension=len(record["A"]), status="ok"))
+        path = folder / "certificates" / f"case_{index}.json.gz"
+        path.write_bytes(gzip.compress(json.dumps(certificate, sort_keys=True).encode(), mtime=0))
+        result = CertifiedTraceResult(certificate)
+        rows.append(dict(case=index, group="scalar", dimension=len(record["A"]), status=result.status, verified=True,
+                         lower=result.lower_bound, upper=result.upper_bound, relative_gap=result.relative_gap,
+                         subdivisions=certificate["subdivisions"], problem_sha256=certificate["problem_sha256"],
+                         certificate_sha256=digest(path)))
+    write_validation(folder / "validation", systems, cases)
+    write_certification_table(folder, rows)
     return write_manifest(folder, [f"certificates/case_{index}.json.gz" for index in range(len(rows))])
 
 
-def write_manifest(folder, certificates):
-    outputs = {name: hashlib.sha256((folder / name).read_bytes()).hexdigest()
-               for name in [*certificates, "certification_cases.csv"]}
+def write_certification_table(folder, rows):
+    """The case table and the summary that counts it, as run_certified_evaluation.py writes them."""
+    write_table(folder / "certification_cases.csv", rows)
+    (folder / "certification_summary.json").write_text(json.dumps({
+        "selected": len(rows), "retained": len(rows), "statuses": dict(Counter(str(row["status"]) for row in rows)),
+        "verified": sum(str(row["verified"]) == "True" for row in rows)}))
+
+
+def write_manifest(folder, certificates, cases=None, tables=("certification_cases.csv", "certification_summary.json")):
+    """Manifest of a certification run of the selected cases (None: all) on the inputs in folder / "validation"."""
     manifest = folder / "certification_manifest.json"
-    manifest.write_text(json.dumps({"sources_changed_during_run": False, "outputs_sha256": outputs}))
+    manifest.write_text(json.dumps({
+        "arguments": {"validation_dir": str(folder / "validation"), "cases": cases},
+        "inputs_sha256": {name: digest(folder / "validation" / name) for name in ("systems.npz", "validation_cases.csv")},
+        "sources_changed_during_run": False,
+        "outputs_sha256": {name: digest(folder / name) for name in [*certificates, *tables]},
+    }))
+    return manifest
+
+
+def write_combined_archive(folder, plants, ratios=(0.1, 1.0)):
+    """Lay out validation inputs, tasks, risk certificates and their table like run_combined_mse_evaluation.py."""
+    (folder / "risk_certificates").mkdir(parents=True)
+    systems, cases, combined, tasks, rows = {}, [], {}, [], []
+    for index, (A, H, Q, R) in enumerate(plants):
+        systems.update({f"case_{index}_{key}": value for key, value in zip("AHQR", (A, H, Q, R))})
+        cases.append(dict(case=index, group="random_2d", dimension=A.shape[0], status="ok"))
+        for ratio in ratios:
+            case = len(tasks)
+            problem = CombinedParetoProblem(A, H, ratio * Q, ratio * R, Q, R)
+            for key in ("A", "H", "Q_stochastic", "R_stochastic", "Q_bounded", "R_bounded"):
+                combined[f"case_{case}_{key}"] = getattr(problem, key)
+            alpha = np.full(3, 1 / 3)
+            gain = solve_dare(GainOptimizedProblem(A, H, Q, R), alpha)[1]
+            certificate = certify_combined_risk(problem, combined_mse_value_gradient(problem, gain, alpha))
+            path = folder / "risk_certificates" / f"case_{case}.json.gz"
+            path.write_bytes(gzip.compress(json.dumps(certificate, sort_keys=True).encode(), mtime=0))
+            tasks.append(dict(case=case, archive_case=index, group="random_2d", dimension=A.shape[0],
+                              stochastic_ratio=ratio))
+            rows.append(dict(tasks[-1], status="ok", verified_risk_upper=float(Fraction(certificate["risk_upper"])),
+                             risk_certificate_sha256=digest(path)))
+    write_validation(folder / "validation", systems, cases)
+    np.savez_compressed(folder / "combined_systems.npz", **combined)
+    (folder / "selected_cases.json").write_text(json.dumps(tasks))
+    write_table(folder / "combined_mse_cases.csv", rows)
+    (folder / "combined_mse_summary.json").write_text(json.dumps({"selected": len(rows), "retained": len(rows),
+                                                                  "failed": 0}))
+    return write_combined_manifest(folder, ratios)
+
+
+def write_combined_manifest(folder, ratios=(0.1, 1.0)):
+    manifest = folder / "combined_mse_manifest.json"
+    outputs = [path for path in sorted(folder.rglob("*")) if path.is_file() and path != manifest
+               and path.relative_to(folder).parts[0] != "validation"]
+    manifest.write_text(json.dumps({
+        "arguments": {"validation_dir": str(folder / "validation"), "cases": None, "per_dimension": 10,
+                      "ratios": list(ratios)},
+        "inputs_sha256": {name: digest(folder / "validation" / name) for name in ("systems.npz", "validation_cases.csv")},
+        "sources_changed_during_run": False,
+        "outputs_sha256": {str(path.relative_to(folder)): digest(path) for path in outputs},
+    }))
     return manifest
 
 
@@ -432,3 +536,121 @@ def test_archive_verifier_enforces_the_target_and_replays_every_cited_certificat
     table.write_text(table.read_text().replace(f"{float(row['lower']):.17e}", row["upper"]))
     code, _, error = run_archive_verifier(write_manifest(manifest.parent, ["certificates/case_0.json.gz"]))
     assert code == 1 and "case 0 disagrees with its certificate in ['lower']" in error
+
+
+
+
+def two_plant_certificates():
+    """Certificates of two plants that share group and dimension, so that only the plants tell their rows apart."""
+    noisy = GainOptimizedProblem(np.zeros((1, 1)), np.ones((1, 1)), np.ones((1, 1)), np.array([[9.0]]))
+    results = [certify_steady_trace(problem, [0.1, 0.8, 0.1], rtol=0.05, max_nodes=300) for problem in
+               (scalar_problem(), noisy)]
+    assert [result.status for result in results] == ["certified_gap"] * 2
+    return [result.certificate for result in results]
+
+
+def test_archive_verifier_binds_every_case_id_to_its_original_plant(tmp_path):
+    manifest = write_archive(tmp_path / "archive", two_plant_certificates())
+    folder, certificates = manifest.parent, [f"certificates/case_{index}.json.gz" for index in range(2)]
+    code, lines, _ = run_archive_verifier(manifest, "--rtol", "0.05")
+    assert code == 0 and lines[-1]["table_rows_backed"] == 2
+    rows = list(csv.DictReader((folder / "certification_cases.csv").open(newline="")))
+
+    def verify_table(rows, cases=None, tables=("certification_cases.csv", "certification_summary.json")):
+        write_certification_table(folder, rows)
+        return run_archive_verifier(write_manifest(folder, certificates, cases, tables), "--rtol", "0.05")
+
+    # Swapped case IDs: every row still says what the certificate it cites proves, but for the other plant.
+    code, _, error = verify_table([dict(rows[0], case="1"), dict(rows[1], case="0")])
+    assert code == 1 and "case 1 cites a certificate of another plant" in error
+    # One row for every selected case, and none for another.
+    for table, cases, message in (([rows[0]], None, "missing [1]"), ([rows[0], rows[1], rows[1]], None, "duplicated [1]"),
+                                  (rows, [1], "unexpected [0]")):
+        code, _, error = verify_table(table, cases)
+        assert code == 1 and message in error
+    assert verify_table([rows[1]], [1])[0] == 0
+    # A row describes its case as the validation archive does.
+    code, _, error = verify_table([dict(rows[0], dimension="2"), rows[1]])
+    assert code == 1 and "case 0 does not describe that case in ['dimension']" in error
+    # Renaming the hash column does not take the table out of the check, and leaving the table out of the
+    # manifest does not either.
+    renamed = [{("hash" if key == "certificate_sha256" else key): value for key, value in row.items()} for row in rows]
+    code, _, error = verify_table(renamed)
+    assert code == 1 and "must cite its certificates in the column certificate_sha256" in error
+    code, _, error = verify_table(rows, tables=())
+    assert code == 1 and "no result table cites the trace certificates" in error
+    # An error row reports no result, and the summary counts the rows of its table.
+    code, _, error = verify_table([dict(rows[0], status="error", error="RuntimeError: lost"), rows[1]])
+    assert code == 1 and "case 0 is an error row but reports" in error
+    erased = dict.fromkeys(("lower", "upper", "relative_gap", "subdivisions", "problem_sha256", "certificate_sha256"), "")
+    assert verify_table([dict(rows[0], status="error", error="RuntimeError: lost", verified="False", **erased),
+                         rows[1]])[0] == 0
+    write_certification_table(folder, rows)
+    (folder / "certification_summary.json").write_text(json.dumps(
+        {"selected": 2, "retained": 2, "statuses": {"certified_gap": 1, "error": 1}, "verified": 1}))
+    code, _, error = run_archive_verifier(write_manifest(folder, certificates), "--rtol", "0.05")
+    assert code == 1 and "certification_summary.json does not count the rows" in error
+    # The plants come from the validation inputs that the run recorded, found where the manifest says or given.
+    write_certification_table(folder, rows)
+    manifest = write_manifest(folder, certificates)
+    moved = (folder / "validation").rename(tmp_path / "elsewhere")
+    code, _, error = run_archive_verifier(manifest, "--rtol", "0.05")
+    assert code == 1 and "--validation-dir" in error
+    assert run_archive_verifier(manifest, "--rtol", "0.05", "--validation-dir", str(moved))[0] == 0
+    with np.load(moved / "systems.npz") as archive:
+        systems = dict(archive)
+    np.savez_compressed(moved / "systems.npz", **dict(systems, case_0_R=2 * systems["case_0_R"]))
+    code, _, error = run_archive_verifier(manifest, "--rtol", "0.05", "--validation-dir", str(moved))
+    assert code == 1 and "not the input that the run recorded" in error
+
+
+def test_archive_verifier_binds_combined_rows_to_the_plants_of_their_tasks(tmp_path):
+    plants = [(0.6 * np.eye(2), np.eye(2), np.eye(2), np.eye(2)),
+              (np.array([[0.5, 0.1], [0.0, 0.7]]), np.array([[1.0, 0.0]]), np.diag([1.0, 2.0]), np.array([[0.5]]))]
+    # Tasks 0 and 1 reuse archive case 0 at the ratios 0.1 and 1, tasks 2 and 3 archive case 1.
+    manifest = write_combined_archive(tmp_path / "combined", plants)
+    folder = manifest.parent
+    code, lines, _ = run_archive_verifier(manifest)
+    assert code == 0 and lines[-1]["table_rows_backed"] == 4 and lines[-1]["trace_certificates"] == 0
+    rows = list(csv.DictReader((folder / "combined_mse_cases.csv").open(newline="")))
+    tasks = json.loads((folder / "selected_cases.json").read_text())
+    with np.load(folder / "combined_systems.npz") as archive:
+        systems = dict(archive)
+
+    def verify(rows=rows, tasks=tasks, systems=systems):
+        write_table(folder / "combined_mse_cases.csv", rows)
+        (folder / "selected_cases.json").write_text(json.dumps(tasks))
+        np.savez_compressed(folder / "combined_systems.npz", **systems)
+        return run_archive_verifier(write_combined_manifest(folder))
+
+    # A row that cites the risk certificate of another task, with that task's bound, or that claims its case ID.
+    cited = {key: rows[2][key] for key in ("verified_risk_upper", "risk_certificate_sha256")}
+    code, _, error = verify([dict(rows[0], **cited), *rows[1:]])
+    assert code == 1 and "case 0 cites a certificate of another plant" in error
+    code, _, error = verify([dict(rows[0], case="2"), rows[1], dict(rows[2], case="0"), rows[3]])
+    assert code == 1 and "does not describe that case in ['archive_case']" in error
+    # The ratio labels belong to the tasks, whether swapped in the table, also in the task list, or a task dropped.
+    swapped = [dict(rows[0], stochastic_ratio=rows[1]["stochastic_ratio"]),
+               dict(rows[1], stochastic_ratio=rows[0]["stochastic_ratio"]), *rows[2:]]
+    code, _, error = verify(swapped)
+    assert code == 1 and "case 0 does not describe that case in ['stochastic_ratio']" in error
+    relabelled = [dict(tasks[0], stochastic_ratio=1.0), dict(tasks[1], stochastic_ratio=0.1), *tasks[2:]]
+    for table, listed in ((swapped, relabelled), (rows[:3], tasks[:3])):
+        code, _, error = verify(table, listed)
+        assert code == 1 and "selected_cases.json does not list the tasks that the recorded arguments select" in error
+    # Every task reuses the original set-membership plant of its archive case, with descriptors scaled by its ratio.
+    exchanged = dict(systems)
+    for key in ("Q_stochastic", "R_stochastic"):
+        exchanged[f"case_0_{key}"], exchanged[f"case_1_{key}"] = systems[f"case_1_{key}"], systems[f"case_0_{key}"]
+    code, _, error = verify(systems=exchanged)
+    assert code == 1 and "task 0 does not scale the Q of archive case 0 by 0.1" in error
+    code, _, error = verify(systems=dict(systems, case_0_A=0.5 * systems["case_0_A"]))
+    assert code == 1 and "task 0 does not use the A of archive case 0" in error
+    # The result table must cite the risk certificates, and must not be missing.
+    code, _, error = verify([{("hash" if key == "risk_certificate_sha256" else key): value for key, value in row.items()}
+                             for row in rows])
+    assert code == 1 and "must cite its certificates in the column risk_certificate_sha256" in error
+    verify()
+    (folder / "combined_mse_cases.csv").unlink()
+    code, _, error = run_archive_verifier(write_combined_manifest(folder))
+    assert code == 1 and "no result table that cites its risk certificates" in error

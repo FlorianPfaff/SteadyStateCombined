@@ -23,7 +23,11 @@ import scipy
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from steady_state_combined.combined_mse import default_combined_starts, optimize_combined_mse  # noqa: E402
+from steady_state_combined.combined_mse import (  # noqa: E402
+    default_combined_starts,
+    optimize_combined_mse,
+    select_combined_cases,
+)
 from steady_state_combined.combined_pareto import CombinedParetoProblem  # noqa: E402
 from steady_state_combined.ellipsoidal import sym  # noqa: E402
 from steady_state_combined.research import solve_dare  # noqa: E402
@@ -111,18 +115,7 @@ def main():
             raise RuntimeError(f"archive hash mismatch: {name}")
     with (root / "validation_cases.csv").open(newline="") as stream:
         archive_cases = list(csv.DictReader(stream))
-    selected, counts = [], {}
-    for row in archive_cases:
-        if args.cases is not None:
-            include = int(row["case"]) in args.cases
-        elif row["group"] in ("deterministic", "tracking_6d"):
-            include = True
-        else:
-            include = counts.get(row["dimension"], 0) < args.per_dimension
-            if include:
-                counts[row["dimension"]] = counts.get(row["dimension"], 0) + 1
-        if include:
-            selected.append(row)
+    selected = select_combined_cases(archive_cases, args.cases, args.per_dimension)
     tasks, systems = [], {}
     with np.load(root / "systems.npz") as archive:
         for original in selected:

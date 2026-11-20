@@ -68,7 +68,7 @@ The primary archive has 452 cases: one deterministic plant, 300 historical two-s
 The research module provides:
 
 - globally solved fixed-gain weighted trace via convex scalar reduction;
-- adjoint-only feasible Armijo iteration, with roundoff-level stagnation detection;
+- adjoint-only feasible Armijo iteration, with roundoff-level stagnation detection; a stop short of the KKT tolerance counts as converged only if a second-order optimality-gap bound confirms it, and is otherwise marked `stagnated`; the validation fails a plant whose adjoint value lies more than 1e-6 above the global scalar solution or 1e-7 below it;
 - independent SciPy DARE/Lyapunov solutions and residual checks;
 - analytic one-step and DARE envelope gradients;
 - continuous greedy and steady-state searches with matched tolerances and positivity floors.
@@ -236,7 +236,9 @@ python -m pip install -e '.[dev,plot,research,certification,reference]'
 
 The certified evaluation reuses the exact archived plants in the paper
 repository. It retains all selected cases, checkpoints each search, and
-independently replays every returned certificate:
+independently replays every returned certificate. A rerun into the same
+directory resumes each search from its checkpoint; a checkpoint left by a
+failed initialization holds no progress and is replaced by a fresh start:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python examples/run_certified_evaluation.py \
@@ -291,7 +293,17 @@ Both verification commands judge the gap themselves rather than trusting
 the tolerance stored in a certificate: they exit with status 3 when the
 bounds are valid but do not prove the relative gap given with `--rtol`
 (default 0.001). The archive check also requires every table row that cites
-a certificate hash to agree with a replayed certificate.
+a certificate hash to agree with a replayed certificate, and it binds each
+row to its plant: a table needs exactly one row per selected case, and a row
+may only cite a certificate of the plant that its case ID names in the
+original `systems.npz`. For the combined study the tasks are rebuilt from the
+recorded arguments, and each task's stochastic descriptors must have the
+spectrum of its plant's scaled by its ratio. The result tables must cite their
+certificates, an error row may report no result, and each run summary must
+count its table. The check reads the validation archive from the
+`validation_dir` recorded in the manifest, checked against the recorded input
+hashes; pass `--validation-dir` when the archive has moved, as for the paper
+archive.
 
 The recorded expansion certifies all 452 archived trace designs within a
 0.1% global gap. The combined study has 119 successful matched comparisons

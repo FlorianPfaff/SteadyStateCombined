@@ -264,6 +264,8 @@ def certify_steady_trace(
     ``max_nodes`` counts additional subdivisions in this invocation.
     All retained leaves, including pruned ones, form a complete cover and
     are written to the certificate. A checkpoint can be verified and resumed.
+    A checkpoint without a feasible incumbent, written when the initial
+    design failed, is replaced by a fresh start instead.
 
     Where the DARE of a region's corner has no stabilizing solution (an unobservable mode that those weights
     make unstable), the region is bounded by a finite iterate. When such a leaf blocks the search it is bounded
@@ -310,9 +312,12 @@ def certify_steady_trace(
         previous = json.loads(path.read_text())
         if previous["problem_sha256"] != certificate["problem_sha256"]:
             raise ValueError("checkpoint belongs to another problem")
-        verify_trace_certificate(previous)
-        certificate = previous
-        certificate.update(rtol=str(rational(rtol)), atol=str(rational(atol)))
+        # A failed initialization is the only checkpoint without an incumbent. It holds no search progress, so the
+        # call starts afresh and may succeed, for instance from new initial weights, instead of failing its replay.
+        if not (previous.get("status") == "no_feasible_incumbent" and previous.get("incumbent") is None):
+            verify_trace_certificate(previous)
+            certificate = previous
+            certificate.update(rtol=str(rational(rtol)), atol=str(rational(atol)))
     incumbent = certificate["incumbent"]
     if incumbent is None:
         try:

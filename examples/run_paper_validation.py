@@ -132,6 +132,11 @@ def evaluate_case(task: tuple[int, str, GainOptimizedProblem, np.ndarray | None,
         gap = (adjoint.value - global_trace.value) / global_trace.value
         if gap < -1e-7:
             raise RuntimeError("adjoint value is below independently solved global reference")
+        # The two solvers check each other only if they agree from both sides. Above the global value by more than
+        # its KKT tolerance, the adjoint has stagnated or one of the two is wrong.
+        if gap > 1e-6:
+            raise RuntimeError(f"adjoint value is above independently solved global reference ({gap:.1e}, "
+                               f"{'stagnated' if adjoint.stagnated else 'confirmed'})")
 
         row = {
             "case": index,
