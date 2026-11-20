@@ -291,7 +291,17 @@ Both verification commands judge the gap themselves rather than trusting
 the tolerance stored in a certificate: they exit with status 3 when the
 bounds are valid but do not prove the relative gap given with `--rtol`
 (default 0.001). The archive check also requires every table row that cites
-a certificate hash to agree with a replayed certificate.
+a certificate hash to agree with a replayed certificate, and it binds each
+row to its plant: a table needs exactly one row per selected case, and a row
+may only cite a certificate of the plant that its case ID names in the
+original `systems.npz`. For the combined study the tasks are rebuilt from the
+recorded arguments, and each task's stochastic descriptors must have the
+spectrum of its plant's scaled by its ratio. The result tables must cite their
+certificates, an error row may report no result, and each run summary must
+count its table. The check reads the validation archive from the
+`validation_dir` recorded in the manifest, checked against the recorded input
+hashes; pass `--validation-dir` when the archive has moved, as for the paper
+archive.
 
 The recorded expansion certifies all 452 archived trace designs within a
 0.1% global gap. The combined study has 119 successful matched comparisons

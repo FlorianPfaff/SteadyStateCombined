@@ -137,6 +137,27 @@ def combined_stationarity(evaluation, floor):
     return float(max(gain_residual, residual / scale))
 
 
+def select_combined_cases(archive_cases, cases=None, per_dimension=10):
+    """Archive rows of the matched combined-MSE study, in archive order.
+
+    Explicit ``cases`` select themselves; otherwise every deterministic and tracking plant is taken, together with
+    the first ``per_dimension`` plants of every other dimension.
+    """
+    selected, counts = [], {}
+    for row in archive_cases:
+        if cases is not None:
+            include = int(row["case"]) in cases
+        elif row["group"] in ("deterministic", "tracking_6d"):
+            include = True
+        else:
+            include = counts.get(row["dimension"], 0) < per_dimension
+            if include:
+                counts[row["dimension"]] = counts.get(row["dimension"], 0) + 1
+        if include:
+            selected.append(row)
+    return selected
+
+
 def default_combined_starts(problem, floor=1e-8):
     bounded = GainOptimizedProblem(problem.A, problem.H, problem.Q_bounded, problem.R_bounded)
     starts = []
