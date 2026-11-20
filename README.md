@@ -236,7 +236,9 @@ python -m pip install -e '.[dev,plot,research,certification,reference]'
 
 The certified evaluation reuses the exact archived plants in the paper
 repository. It retains all selected cases, checkpoints each search, and
-independently replays every returned certificate:
+independently replays every returned certificate. A rerun into the same
+directory resumes each search from its checkpoint; a checkpoint left by a
+failed initialization holds no progress and is replaced by a fresh start:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python examples/run_certified_evaluation.py \

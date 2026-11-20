@@ -357,6 +357,30 @@ def test_replay_rejects_unknown_status_and_forged_subdivision_count():
         verify_trace_certificate({key: value for key, value in certificate.items() if key != "subdivisions"})
 
 
+def test_a_failed_start_does_not_block_a_retry_from_new_weights(tmp_path):
+    # The default initialization finds no feasible design for this plant, and the checkpoint records just that. A
+    # retry from feasible weights used to replay that checkpoint first and fail: "no verified feasible incumbent".
+    problem, checkpoint = slow_unobservable_problem(), tmp_path / "checkpoint.json"
+    assert certify_steady_trace(problem, checkpoint_path=checkpoint).status == "no_feasible_incumbent"
+    assert certify_steady_trace(problem, checkpoint_path=checkpoint).status == "no_feasible_incumbent"
+    alpha = [0.99, 0.0099, 0.0001]
+    retried = certify_steady_trace(problem, alpha, max_nodes=2000, checkpoint_path=checkpoint)
+    fresh = certify_steady_trace(problem, alpha, max_nodes=2000)
+    assert retried.status == "certified_gap"
+    assert dict(retried.certificate, seconds=0) == dict(fresh.certificate, seconds=0)
+    assert verify_trace_certificate(retried.certificate, required_rtol=PAPER_TARGET)["target_met"]
+    assert certify_steady_trace(problem, max_nodes=0, checkpoint_path=checkpoint).status == "certified_gap"
+    # Every other checkpoint is still replayed before it is used: one without an incumbent is not a failed start
+    # unless it says so, and a failed start of another plant is no checkpoint of this one.
+    checkpoint.write_text(json.dumps(dict(json.loads(checkpoint.read_text()), incumbent=None)))
+    with pytest.raises(ValueError, match="incumbent"):
+        certify_steady_trace(problem, alpha, checkpoint_path=checkpoint)
+    other = GainOptimizedProblem(problem.A, problem.H, 2 * problem.Q, problem.R)
+    assert certify_steady_trace(other, checkpoint_path=checkpoint, resume=False).status == "no_feasible_incumbent"
+    with pytest.raises(ValueError, match="another problem"):
+        certify_steady_trace(problem, alpha, checkpoint_path=checkpoint)
+
+
 def test_certificate_cli_separates_short_of_target_from_invalid(tmp_path, monkeypatch, capsys):
     relabelled = dict(budget_limited_certificate(), status="certified_gap", rtol="1000")
     path = tmp_path / "certificate.json"
